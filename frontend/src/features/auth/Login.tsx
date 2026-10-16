@@ -67,7 +67,7 @@ export function Login({ onLogin, initializationRequired, maintenanceMode, passwo
   }
 
   return <main class={s.login}><div class={s.loginPanel}>
-    <div class={s.loginBrand}><Icon name="bookmark" size={36} /><h1>网站收藏</h1><p>让每一个好网站，都有它的位置。</p></div>
+    <div class={s.loginBrand}><Icon name="bookmark" size={36} /><h1>Linkarium</h1><p>让每一个好网站，都有它的位置。</p></div>
     {maintenanceMode ? <p role="status">正在维护数据，请等待完成后重新连接。</p>
       : initializationRequired ? <div><p role="status">请先在部署电脑初始化访问认证。</p>
         <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: "12px" }}>.\.venv\Scripts\python.exe backend\manage.py initialize{passwordEnabled ? " --debug" : ""}</pre>

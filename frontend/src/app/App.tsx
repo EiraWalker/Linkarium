@@ -235,7 +235,7 @@ export function App() {
     return (
       <div class={s.startup}>
         <Icon name="bookmark" size={36} />
-        <h1>网站收藏</h1>
+        <h1>Linkarium</h1>
         <ErrorNotice message={startupError} retry={() => void sessionLoad()} />
         {!startupError && <p class="muted">正在连接你的收藏库…</p>}
       </div>
@@ -294,7 +294,7 @@ export function App() {
             class={s.brand}
           >
             <Icon name="bookmark" size={24} />
-            <span>网站收藏</span>
+            <span>Linkarium</span>
           </a>
           <nav class={s.topNav} aria-label="主页面">
             {navigation.map((n) => (

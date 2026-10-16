@@ -15,7 +15,7 @@
 
 </div>
 
-![Linkarium 界面展示：网站收藏、网页快照与 AI 分类，使用示例数据](doc/linkarium-showcase.png)
+![Linkarium 界面展示：可视化收藏库、网页快照与 AI 分类（示例数据）](doc/linkarium-showcase.png?v=2)
 
 ## 功能
 

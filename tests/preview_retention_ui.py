@@ -101,7 +101,10 @@ class Library:
             return
         if path == "session":
             data = dict(authenticated=self.authenticated, csrf_token="fixture-csrf",
-                        active_generation=self.generation, library_epoch=1)
+                        active_generation=self.generation, library_epoch=1,
+                        password_login_enabled=True)
+        elif path == "session/passkeys":
+            data = dict(items=[], can_add=False)
         elif path == "session/logout":
             self.authenticated = False
             data = {}
@@ -227,7 +230,7 @@ async def scenario(browser, origin, mobile=False):
     await page.get_by_role("navigation", name="工具页面" if mobile else "主页面", exact=True).get_by_role("link", name="设置", exact=True).click()
     await expect(page.get_by_role("heading", name="设置", exact=True)).to_be_visible()
     assert await page.locator("iframe:visible").count() == 0
-    await page.get_by_role("link", name="网站收藏", exact=True).click()
+    await page.get_by_role("link", name="Linkarium", exact=True).click()
     await settle(page)
     await page.go_back()
     await expect(page.get_by_role("heading", name="设置", exact=True)).to_be_visible()
@@ -255,11 +258,11 @@ async def scenario(browser, origin, mobile=False):
     # An API 401 follows the real application session-expiry path.
     library.expire_next = True
     await page.get_by_role("button", name="添加星标 Preview Site 000", exact=True).click()
-    await expect(page.get_by_role("button", name="进入收藏库", exact=True)).to_be_visible()
+    await expect(page.get_by_role("button", name="密码登录", exact=True)).to_be_visible()
     await expect(page.locator("iframe")).to_have_count(0)
     library.generation = "preview-library-two"
     await page.locator('input[type="password"]').fill("isolated-fixture-password")
-    await page.get_by_role("button", name="进入收藏库", exact=True).click()
+    await page.get_by_role("button", name="密码登录", exact=True).click()
     await settle(page)
     assert library.requests[f"version-0-{variant}-new"] == 2
     await page.reload()

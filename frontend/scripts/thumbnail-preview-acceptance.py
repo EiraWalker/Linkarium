@@ -114,16 +114,16 @@ async def scenario(browser, origin, jpeg, mobile=False):
     await page.get_by_role("navigation", name="工具页面" if mobile else "主页面", exact=True).get_by_role("link", name="设置", exact=True).click()
     await expect(page.get_by_role("heading", name="设置", exact=True)).to_be_visible()
     await expect(page.locator("[data-preview-image]:visible")).to_have_count(0)
-    await page.get_by_role("link", name="网站收藏", exact=True).click()
+    await page.get_by_role("link", name="Linkarium", exact=True).click()
     await settle(page)
     assert library.thumbnail_requests[f"version-0-{variant}-new"] == 1
     library.expire_next = True
     await page.get_by_role("button", name="添加星标 Preview Site 000", exact=True).click()
-    await expect(page.get_by_role("button", name="进入收藏库", exact=True)).to_be_visible()
+    await expect(page.get_by_role("button", name="密码登录", exact=True)).to_be_visible()
     await expect(page.locator("[data-preview-image]")).to_have_count(0)
     library.generation = "second-library"
     await page.locator('input[type="password"]').fill("fixture")
-    await page.get_by_role("button", name="进入收藏库", exact=True).click()
+    await page.get_by_role("button", name="密码登录", exact=True).click()
     await settle(page)
     assert library.thumbnail_requests[f"version-0-{variant}-new"] == 2
     if not mobile:
@@ -194,7 +194,7 @@ async def faults(browser, origin, jpeg):
     library.modes = {"version-0-desktop": "expired"}
     await page.route("**/api/v1/**", library.route)
     await page.goto(f"{origin}/library?device=desktop")
-    await expect(page.get_by_role("button", name="进入收藏库", exact=True)).to_be_visible()
+    await expect(page.get_by_role("button", name="密码登录", exact=True)).to_be_visible()
     await expect(page.locator("[data-preview-image]")).to_have_count(0)
     await context.close()
     return {"202_retries_then_ready": True, "404_and_wrong_type_no_html_fallback": True,
