@@ -68,7 +68,7 @@ async def scenario(browser, origin, jpeg, mobile=False):
     await page.route("**/api/v1/**", library.route)
     await page.goto(f"{origin}/library?device={variant}")
     await settle(page)
-    assert len(library.thumbnail_requests) == 48 and library.peak <= (1 if mobile else 2)
+    assert len(library.thumbnail_requests) == 48 and 3 <= library.peak <= 6
     await expect(page.locator("iframe")).to_have_count(0)
     await page.screenshot(path=str(OUTPUT / f"{variant}-first-page.png"))
     initial = dict(library.thumbnail_requests)

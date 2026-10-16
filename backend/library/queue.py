@@ -289,31 +289,38 @@ def group_state(states):
     return ("running" if states["running"] else "queued" if states["queued"] else "retry_wait") if active else "partial" if states["succeeded"] and (states["failed"] or states["cancelled"]) else "failed" if states["failed"] else "cancelled" if states["cancelled"] and not states["succeeded"] else "skipped" if not sum(states.values()) else "succeeded"
 
 
-def task_catalog():
-    """Small durable group summaries; never ship every group's job payloads."""
-    from django.db.models import Count, OuterRef, Q, Subquery
+def task_catalog(number=1, size=48):
+    """Select the history page before building detailed group summaries."""
+    from django.db.models import Count, Exists, OuterRef, Q, Subquery
     from .models import ClassificationProposal
+    memberships = JobGroupMember.objects.filter(group_id=OuterRef('pk'))
+    groups = JobGroup.objects.alias(
+        has_running=Exists(memberships.filter(job__state='running')),
+        has_active=Exists(memberships.filter(job__state__in=ACTIVE)))
+    total = groups.count()
+    active_count = groups.filter(has_active=True).count()
+    newest = groups.filter(has_active=True) if active_count else groups
+    current_id = newest.order_by('-created_at', '-id').values_list('id', flat=True).first()
+    selected = list(groups.order_by('-has_running', '-has_active', '-created_at', '-id')
+                    .values_list('id', flat=True)[(number-1)*size:number*size])
+    needed = set(selected)
+    if current_id:
+        needed.add(current_id)
     pending = ClassificationProposal.objects.filter(batch__job_group_id=OuterRef("pk"), status="pending").values("batch__job_group_id").annotate(n=Count("id")).values("n")
     counts = {f"n_{state}": Count("members", filter=Q(members__job__state=state)) for state in (*ACTIVE, *TERMINAL)}
-    groups = JobGroup.objects.annotate(**counts, pending_count=Subquery(pending)).order_by("-created_at", "-id")
-    rows = []
-    for group in groups:
+    details = {}
+    for group in JobGroup.objects.filter(pk__in=needed).annotate(**counts, pending_count=Subquery(pending)):
         states = {state: getattr(group, f"n_{state}") for state in (*ACTIVE, *TERMINAL)}
-        rows.append({"id": str(group.id), "kind": group.kind, "source": group.source,
+        details[group.id] = {"id": str(group.id), "kind": group.kind, "source": group.source,
                      "created_at": group.created_at.isoformat(), "requested_count": group.requested_count,
                      "state": group_state(states), "total": sum(states.values()),
                      "completed": sum(states[s] for s in TERMINAL), "counts": states,
-                     "pending_count": group.pending_count or 0})
-    # Bring executing/queued work to the front; retain finished history for review.
-    rows.sort(key=lambda row: (row["state"] == "running", row["state"] in ACTIVE, row["created_at"], row["id"]), reverse=True)
-    # The sidebar follows the newest ongoing request, independently of which
-    # history page/batch the user is inspecting in the dialog.
-    active_rows = [row for row in rows if row["state"] in ACTIVE]
-    current = max(active_rows or rows, key=lambda row: (row["created_at"], row["id"]), default=None)
-    return rows, {"active_count": sum(row["state"] in ACTIVE for row in rows),
-                  "current_group": current,
+                     "pending_count": group.pending_count or 0}
+    return [details[identity] for identity in selected if identity in details], {
+                  "active_count": active_count, "current_group": details.get(current_id),
                   "completion_revision": JobAttempt.objects.filter(finished_at__isnull=False).count(),
-                  "pending_proposals": ClassificationProposal.objects.filter(status="pending").count()}
+                  "pending_proposals": ClassificationProposal.objects.filter(status="pending").count()}, {
+                  "number": number, "size": size, "total": total}
 
 
 def group_status(group):

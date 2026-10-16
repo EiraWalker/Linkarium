@@ -110,6 +110,17 @@ class PreviewCacheTests(TestCase):
         self.assertEqual(preview_cache.next_missing("initial").id, version.id)
         self.assertEqual(before, (SnapshotVersion.objects.count(), Artifact.objects.count(), self.site.capture_epoch))
 
+    def test_thumbnail_reuses_the_request_library_generation(self):
+        version = self.publish()
+        def request_root(generation):
+            self.assertEqual(generation, 'initial', 'HTTP must reuse its already-read library state')
+            return self.root
+        with patch('library.preview_cache.generation_root', side_effect=request_root):
+            response = self.client.get(f'/api/v1/snapshots/{version.id}/thumbnail')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(b''.join(response.streaming_content), self.jpeg.read_bytes())
+            response.close()
+
     def test_invalid_image_does_not_turn_valid_archive_into_capture_failure(self):
         with patch("library.preview_cache.store_preview", side_effect=ValueError("bad jpeg")):
             version = self.publish()

@@ -133,7 +133,8 @@ export class PreviewDocuments {
   }
 
   private loadNext() {
-    const concurrency = matchMedia("(max-width:767px)").matches ? 1 : 2;
+    // JPEG previews are independent of the much heavier HTML replay pool.
+    const concurrency = 6;
     let loading = [...this.documents].filter((doc) => doc.state === "loading").length;
     const queued = [...this.documents]
       .filter((doc) => doc.state === "queued" && doc.view && !doc.view.disabled)
@@ -250,31 +251,45 @@ export class PreviewDocuments {
   }
 
   private layout() {
+    const origins = new Map<HTMLElement, { x: number; y: number }>();
+    const updates: (() => void)[] = [];
+    // Read every anchor first; writing a surface before measuring the next
+    // anchor forces repeated style/layout work while previews arrive.
     for (const doc of this.documents) {
       const view = doc.view;
       const surface = doc.surface;
       if (!view || !view.element.isConnected) {
-        if (surface) surface.hidden = true;
+        if (surface) updates.push(() => { surface.hidden = true; });
         continue;
       }
       const rect = view.element.getBoundingClientRect();
       const style = getComputedStyle(view.element);
       const root = doc.root;
-      const origin = root.getBoundingClientRect();
+      let origin = origins.get(root);
+      if (!origin) {
+        const bounds = root.getBoundingClientRect();
+        origin = { x: bounds.left - root.scrollLeft + root.clientLeft,
+          y: bounds.top - root.scrollTop + root.clientTop };
+        origins.set(root, origin);
+      }
       // Coordinates belong to the scroll content, so scrolling moves both
       // anchor and document natively, including compositor-only scroll frames.
-      const x = rect.left - origin.left + root.scrollLeft - root.clientLeft + parseFloat(style.borderLeftWidth);
-      const y = rect.top - origin.top + root.scrollTop - root.clientTop + parseFloat(style.borderTopWidth);
+      const x = rect.left - origin.x + parseFloat(style.borderLeftWidth);
+      const y = rect.top - origin.y + parseFloat(style.borderTopWidth);
       const width = rect.width - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth);
       const height = rect.height - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth);
       const visible = rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
       doc.priority = view.detail ? 100 : visible ? 20 : 0;
       if (!surface) continue;
-      surface.hidden = width <= 0 || height <= 0 || doc.state !== "ready";
-      Object.assign(surface.style, {
-        left: `${x}px`, top: `${y}px`, width: `${width}px`, height: `${height}px`,
-        borderRadius: style.borderRadius,
+      const hidden = width <= 0 || height <= 0 || doc.state !== "ready";
+      const borderRadius = style.borderRadius;
+      updates.push(() => {
+        surface.hidden = hidden;
+        Object.assign(surface.style, {
+          left: `${x}px`, top: `${y}px`, width: `${width}px`, height: `${height}px`, borderRadius,
+        });
       });
     }
+    for (const update of updates) update();
   }
 }

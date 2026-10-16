@@ -82,19 +82,19 @@ def store_preview(version, source, generation=None, *, expected_sha256=None, exp
         return target
 
 
-def preview_response(request, version):
+def preview_response(request, version, *, generation=None):
     from django.http import FileResponse, HttpResponseNotModified, JsonResponse
     from django.utils.http import parse_etags
-    path = image_path(version)
+    path = image_path(version, generation)
     if not path.is_file():
-        if not artifact_path(version.artifact_id, version.artifact.relative_path).is_file():
+        if not artifact_path(version.artifact_id, version.artifact.relative_path, generation).is_file():
             raise ApiError("ARTIFACT_MISSING", "归档文件缺失", 404)
         failure = path.with_suffix(".failed")
         if failure.exists() and time.time() - failure.stat().st_mtime < RETRY_SECONDS:
             response = JsonResponse({"error": {"code": "PREVIEW_UNAVAILABLE", "message": "预览图暂不可用"}}, status=503)
             response["Retry-After"] = str(max(1, int(RETRY_SECONDS - (time.time() - failure.stat().st_mtime))))
             return response
-        request_preview(version)
+        request_preview(version, generation)
         response = JsonResponse({"data": {"state": "pending"}}, status=202)
         response["Retry-After"] = "3"
         return response

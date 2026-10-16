@@ -116,9 +116,9 @@ export function App() {
     refresh,
   );
   const progress = useResource<JobGroup>(
-    authorized && group ? `/job-groups/${group}?library=${encodeURIComponent(libraryIdentity)}` : null,
+    authorized && showProgress && group ? `/job-groups/${group}?library=${encodeURIComponent(libraryIdentity)}` : null,
     refresh,
-    group ? 2000 : 0,
+    showProgress && group ? 2000 : 0,
   );
   const tasks = useResource<TaskCatalog>(
     authorized ? `/job-groups?page=${taskPage}&page_size=20&library=${encodeURIComponent(libraryIdentity)}` : null,
@@ -143,6 +143,8 @@ export function App() {
     if (previous?.library === libraryIdentity && previous.signature !== taskStateSignature) {
       // Also follow batches started elsewhere and retries starting automatically.
       // Equal polling responses do not refresh the catalog or reset selections.
+      // This durable revision also covers tasks finishing on another device.
+      // Merely opening a completed history group must not refresh the library.
       changed();
     }
   }, [authorized, libraryIdentity, taskStateSignature]);
@@ -202,12 +204,6 @@ export function App() {
     const timer = setTimeout(() => setToast(""), 5500);
     return () => clearTimeout(timer);
   }, [toast]);
-  const progressState = progress.data?.state;
-  useEffect(() => {
-    if (terminalState(progressState)) {
-      changed();
-    }
-  }, [progressState]);
   useEffect(() => {
     setNavOpen(false);
   }, [route.url.pathname]);
@@ -552,7 +548,7 @@ export function App() {
             <p class="muted">{tasks.data?.active_count ?? 0} 组任务仍在后台处理。刷新页面后可在此继续查看进度和分类结果。</p>
             {!group && <Empty title={tasks.loading ? "正在读取后台任务…" : "暂无后台任务"} />}
             <ErrorNotice message={progress.error} retry={progress.reload} />
-            {group && <p>{stateLabel(progress.data?.state ?? "queued")}</p>}
+            {group && <p>{stateLabel(progress.data?.state ?? listedTask?.state ?? (currentTask?.id === group ? currentTask.state : "queued"))}</p>}
             {progress.data && (
               <>
                 <p>

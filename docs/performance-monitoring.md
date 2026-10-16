@@ -1,5 +1,29 @@
 # 软件耗时监测工作流
 
+## CPU 与图片显示的专项诊断
+
+2026-10-16 新增 `scripts/performance_cpu.py`。它分别记录正式 Web 进程的 CPU 差值、临时 Web 实例的请求区间，以及独立单线程 Django GET 批次的 CPU。没有修改正式服务的并发、缓存、鉴权和业务代码，也不重启正式服务。
+
+先从当前监听端口确认 Web PID，再执行；输出目录必须不存在：
+
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 8001 | Select-Object OwningProcess
+.\.venv\Scripts\python.exe -X utf8 scripts\performance_cpu.py collect --base-url http://127.0.0.1:8001 --web-pid <上一步的PID> --output output\performance\cpu-new-run
+.\.venv\Scripts\python.exe -X utf8 scripts\performance_cpu_report.py output\performance\cpu-new-run
+```
+
+当前 CPU 采集器使用 Windows 原生进程计数。桌面/手机各测 3 轮冷暖，共 12 次正式服务导航和 12 次临时服务导航；临时服务使用同一库，只允许 GET/HEAD，阻止 SQL 数据修改和缺图补图请求，测试结束后关闭。每次导航同时记录浏览器图片计时；临时请求按 Request ID 关联。单线程批次测网站列表、目录统计、任务历史列表与 JPEG 200/304，请求使用现有快照，不启动抓取或 AI。临时会话在退出时删除。
+
+区分三个数值：
+
+- CPU 时间：操作系统累计的实际运行量，包含 Python、SQLite、哈希和原生系统调用；不是纯解释器时间。
+- 请求区间：还包含数据库/文件等待、线程调度与流式消费者的拉取间隔；WSGI 外的排队不在其中。
+- 图片加载跨度：浏览器第一张缩略图请求发出，到当前页全部可用预览解码就绪；桌面的并发区间不能相加。
+
+Windows CPU 记账有粒度，短请求可能显示 0，也可能某次 CPU 差值超过其区间。使用较长批次的累计 CPU 求平均；不要据单次短请求算精确 CPU 占比。`cProfile` 使用单独样本定位调用热点，其函数区间不是独占 CPU，不将分析器开销混入批次 CPU。真实进程 CPU 还可能包含用户其他页面的请求，不作为某张图片的独占成本。
+
+报告包括整页图片时间、Web CPU、单核/整机占用、每类请求平均 CPU、手机串行加载的服务端/链路/前端推进分段，以及可展开的函数明细。它不把可消除的理论 CPU 工作量当作换语言的实际提速承诺。
+
 实现日期：2026-10-16。本次只增加监测、采集与报告，不调整缓存策略、分类算法、并发、重试、超时、数据库索引或资源预算。没有新增产品按钮、遥测服务器或第三方运行依赖。
 
 ## 使用

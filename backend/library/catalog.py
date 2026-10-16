@@ -69,6 +69,21 @@ def folder_map():
     return {str(f.id): f for f in Folder.objects.all()}
 
 
+def folder_counts(folders):
+    """Count each occupied folder once along its ancestor chain."""
+    from django.db.models import Count
+    parents = {key: str(folder.parent_id) if folder.parent_id else None for key, folder in folders.items()}
+    counts = dict.fromkeys(folders, 0)
+    for row in Bookmark.objects.values('folder_id').annotate(count=Count('id')):
+        current = str(row['folder_id'])
+        seen = set()
+        while current in parents and current not in seen:
+            seen.add(current)
+            counts[current] += row['count']
+            current = parents[current]
+    return counts
+
+
 def folder_path(folder_id, folders=None):
     folders = folders if folders is not None else folder_map()
     parts, seen = [], set()

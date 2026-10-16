@@ -473,8 +473,7 @@ def route_request(request, route):
         if request.method == "POST":
             return ok(serialize_folder(catalog.create_folder(payload(request))), 201)
         folders = catalog.folder_map()
-        direct = {str(row["folder_id"]): row["count"] for row in Bookmark.objects.values("folder_id").annotate(count=Count("id"))}
-        counts = {key: sum(direct.get(i, 0) for i in catalog.descendant_ids(key, folders)) for key in folders}
+        counts = catalog.folder_counts(folders)
         return ok([serialize_folder(f, folders, counts) for f in sorted(folders.values(), key=lambda f: (f.position, catalog.text_key(f.name)))])
     if parts[0] == "folders" and len(parts) == 3 and parts[2] in ("refresh-preview", "refresh"):
         require_method(request, "POST")
@@ -516,8 +515,9 @@ def route_request(request, route):
         return ok(serialize_tag(tag))
     if route == "job-groups":
         require_method(request, "GET")
-        groups, summary = queue.task_catalog()
-        groups, page = paginate(groups, request)
+        number = bounded_int(request.GET.get("page"), 1, high=1000000)
+        size = bounded_int(request.GET.get("page_size"), 48)
+        groups, summary, page = queue.task_catalog(number, size)
         return ok({"groups": groups, **summary}, page=page)
     if parts[0] == "job-groups" and len(parts) == 2:
         require_method(request, "GET")
@@ -543,7 +543,7 @@ def route_request(request, route):
     if parts[0] == "snapshots" and len(parts) == 3 and parts[2] == "thumbnail":
         require_method(request, "GET", "HEAD")
         from library.preview_cache import preview_response
-        return preview_response(request, catalog.get_entity(SnapshotVersion, parts[1]))
+        return preview_response(request, catalog.get_entity(SnapshotVersion, parts[1]), generation=state.active_generation)
     if parts[0] == "snapshots" and len(parts) == 3 and parts[2] == "preview":
         require_method(request, "GET", "HEAD")
         version = catalog.get_entity(SnapshotVersion, parts[1])

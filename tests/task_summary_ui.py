@@ -40,6 +40,7 @@ def main():
     errors = []
     completion = {"revision": 7}
     reads = {"bookmarks": 0, "folders": 0}
+    detail_reads = {"count": 0}
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -72,6 +73,7 @@ def main():
                         "completion_revision": completion["revision"]},
                         "page": {"total": 21, "page": number, "page_size": 20}})
                 else:
+                    detail_reads["count"] += 1
                     identity = url.path.rsplit("/", 1)[-1]
                     route.fulfill(json={"data": active if identity == active_id else old})
             page.route("**/api/v1/job-groups**", tasks)
@@ -82,12 +84,17 @@ def main():
             expect(summary).not_to_contain_text("部分成功")
             selected_card = page.get_by_role("checkbox", name="选择 同步卡片 7", exact=True)
             selected_card.check()
+            assert detail_reads["count"] == 0, "Closed task dialog must use the catalog summary"
             summary.click()
             dialog = page.get_by_role("dialog", name="后台任务", exact=True)
             select = dialog.get_by_label("任务批次", exact=True)
             expect(select).to_have_value(active_id)
+            page.wait_for_timeout(250)
+            history_reads = dict(reads)
             select.select_option(old_id)
             expect(dialog.get_by_text("已完成 49 / 49 批次", exact=False)).to_be_visible()
+            page.wait_for_timeout(250)
+            assert reads == history_reads, "Opening completed history must not refresh library data"
             expect(summary).to_contain_text("7 / 49")
             dialog.get_by_role("button", name="下一组任务", exact=True).click()
             active["completed"] = 8
@@ -124,6 +131,8 @@ def main():
                 "each_completion_refreshes_library": True, "retry_failure_refreshes_library": True,
                 "selection_and_history_preserved": True, "no_full_page_reload": True,
                 "unchanged_poll_does_not_reload_data": True,
+                "opening_history_does_not_reload_data": True,
+                "closed_dialog_does_not_fetch_job_payloads": True,
                 "page_errors": errors, "real_ai_submissions": 0}, indent=2), encoding="utf8")
             browser.close()
         print("Task summary browser acceptance passed")
