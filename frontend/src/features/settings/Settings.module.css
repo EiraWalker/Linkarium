@@ -8,10 +8,15 @@
 .page > h1 {
   margin-bottom: 8px;
 }
+.page > h1,
+.page > p {
+  text-align: center;
+}
 .section {
   max-width: 860px;
   padding: 24px;
   margin-top: 24px;
+  margin-inline: auto;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
