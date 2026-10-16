@@ -1,0 +1,11 @@
+{
+  "socket_path": "/run/bookmark-capture/launcher.sock",
+  "spool_root": "/var/lib/bookmark-capture/spool",
+  "rootfs": "/opt/bookmark-capture/rootfs",
+  "verification_file": "/etc/bookmark-capture/VERIFIED.json",
+  "app_uid": 10001,
+  "app_gid": 10001,
+  "resolvers": ["1.1.1.1", "9.9.9.9"],
+  "deny_hosts": [],
+  "deny_ipv4": []
+}

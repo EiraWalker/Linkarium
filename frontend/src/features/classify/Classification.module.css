@@ -1,0 +1,183 @@
+.page {
+  flex: 1;
+  min-width: 0;
+  padding: 28px 32px;
+  overflow: auto;
+  background: var(--canvas);
+}
+.heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.heading h1 {
+  margin-bottom: 8px;
+}
+.heading p {
+  margin-bottom: 0;
+  font-size: 13px;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.toolbar select {
+  font-size: 13px;
+}
+.selectAll {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.selectAll label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.proposals {
+  display: grid;
+  gap: 12px;
+}
+.proposal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  display: flex;
+  align-items: start;
+  gap: 16px;
+  max-width: 1100px;
+}
+.checkbox {
+  padding-top: 2px;
+}
+.proposalContent {
+  flex: 1;
+  min-width: 0;
+}
+.proposalHeading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.proposalHeading h2 {
+  font-size: 15px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.url {
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.paths {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 16px 0 12px;
+}
+.paths > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 8px;
+  align-items: baseline;
+  flex: 1;
+}
+.paths small {
+  width: 100%;
+  font-size: 11px;
+}
+.paths span,
+.paths strong {
+  font-size: 13px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.newFolder {
+  font-size: 10px !important;
+  color: var(--blue);
+  background: var(--selection);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.source {
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+.reason {
+  font-size: 12px;
+  margin: 0;
+  color: var(--muted);
+}
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  margin-top: 24px;
+}
+.modes {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+.modes label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+@media (max-width: 767px) {
+  .page {
+    padding: 20px 12px;
+    overflow: visible;
+  }
+  .heading {
+    flex-wrap: wrap;
+  }
+  .heading > button {
+    width: 100%;
+  }
+  .proposal {
+    padding: 14px;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .proposalContent {
+    flex-basis: calc(100% - 28px);
+  }
+  .checkbox { width: 18px; flex: 0 0 18px; }
+  .checkbox input { margin: 0; }
+  .proposalHeading { flex-wrap: wrap; gap: 6px; }
+  .proposalHeading h2 { flex-basis: 100%; }
+  .proposalHeading > span { white-space: nowrap; font-size: 11px; }
+  .proposal > button {
+    margin-left: 26px;
+  }
+  .paths {
+    gap: 8px;
+    align-items: start;
+  }
+  .paths > svg {
+    margin-top: 22px;
+  }
+  .paths span,
+  .paths strong {
+    font-size: 12px;
+  }
+  .toolbar span {
+    width: 100%;
+  }
+  .heading p {
+    font-size: 12px;
+  }
+}

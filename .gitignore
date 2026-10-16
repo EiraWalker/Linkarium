@@ -1,0 +1,35 @@
+.venv/
+data/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.py[cod]
+.env
+tools/
+output/
+.pytest_cache/
+tests/capture/results/
+.playwright-cli/
+
+# Local credentials, databases and private exports
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.bookmarklib.zip
+.codebase-memory/
+
+# Personal research and live-library evaluation data (kept locally)
+/docs/obsidian-classification-reference.md
+/docs/classification-quality-audit.md
+/docs/resource-classifier.md
+/docs/resource-classifier-naming.md
+/tests/fixtures/classification-quality-cases.json
+/frontend/VERIFICATION.md

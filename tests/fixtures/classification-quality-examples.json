@@ -1,0 +1,20 @@
+{
+  "source": "Fully synthetic examples; not derived from a personal collection or real classification results.",
+  "cases": [
+    {
+      "id": "example-web-notes",
+      "url": "https://example.com/test/web-notes",
+      "title": "Example web development notes"
+    },
+    {
+      "id": "example-design-library",
+      "url": "https://example.com/test/design-library",
+      "title": "Example design library"
+    },
+    {
+      "id": "example-science-references",
+      "url": "https://example.com/test/science-references",
+      "title": "Example science references"
+    }
+  ]
+}

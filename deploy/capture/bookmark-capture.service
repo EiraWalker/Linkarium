@@ -1,0 +1,19 @@
+[Unit]
+Description=Bookmark isolated capture launcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/bookmark-capture/launcher.py --config /etc/bookmark-capture/launcher.json
+Restart=on-failure
+RestartSec=3
+UMask=0027
+# The launcher creates namespaces, nftables and transient cgroups. Application services
+# never inherit these privileges; each capture task is separately demoted and isolated.
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/bookmark-capture /run/bookmark-capture /run/netns
+
+[Install]
+WantedBy=multi-user.target

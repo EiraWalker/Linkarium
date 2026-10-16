@@ -1,0 +1,21 @@
+[project]
+name = "bookmark-library"
+version = "0.1.0"
+description = "Personal visual website library"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "Django>=5.2,<5.3",
+  "django-axes>=8,<9",
+  "waitress>=3,<4",
+  "whitenoise>=6,<7",
+  "httpx>=0.28,<0.29",
+  "playwright>=1.55,<2",
+  "html5lib>=1.1,<2",
+  "tinycss2>=1.4,<2",
+  "webauthn>=2.7,<3",
+]
+
+[tool.uv]
+package = false

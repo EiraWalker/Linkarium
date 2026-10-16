@@ -1,0 +1,124 @@
+.page {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 28px 32px;
+  background: var(--canvas);
+}
+.page > h1 {
+  margin-bottom: 8px;
+}
+.section {
+  max-width: 860px;
+  padding: 24px;
+  margin-top: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px #17212f0a;
+}
+.section h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  margin-bottom: 20px;
+}
+.section p {
+  font-size: 13px;
+}
+.section form > label:first-child {
+  max-width: 300px;
+}
+.heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.heading h2 {
+  margin: 0;
+}
+.heading + p {
+  margin-top: 16px;
+}
+.formGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.runtime {
+  display: grid;
+  gap: 0;
+  font-size: 13px;
+}
+.runtime > div {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+}
+.runtime dt {
+  color: var(--muted);
+}
+.runtime dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.activeProfile {
+  margin-top: 16px;
+}
+.dataSection {
+  border-color: #efc8c8;
+}
+.dataAction {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 16px 0;
+}
+.dataAction + .dataAction {
+  border-top: 1px solid var(--border);
+}
+.dataAction h3 {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+.dataAction p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+.dataAction > button {
+  flex-shrink: 0;
+}
+@media (max-width: 767px) {
+  .page {
+    padding: 20px 12px;
+    overflow: visible;
+  }
+  .section {
+    padding: 16px;
+    margin-top: 16px;
+  }
+  .formGrid {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .runtime > div {
+    grid-template-columns: 120px 1fr;
+  }
+  .heading {
+    align-items: start;
+  }
+  .heading button {
+    font-size: 12px;
+  }
+  .dataAction {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+}

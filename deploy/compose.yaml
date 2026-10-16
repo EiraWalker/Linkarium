@@ -1,0 +1,51 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: bookmark-library:0.1.0
+    init: true
+    restart: unless-stopped
+    user: "10001:10001"
+    group_add:
+      - "${BOOKMARK_CAPTURE_GID:-10001}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    ports:
+      - "127.0.0.1:${BOOKMARK_PORT:-8000}:8000"
+    environment:
+      BOOKMARK_DATA_ROOT: /data
+      BOOKMARK_CAPTURE_MODE: isolated
+      BOOKMARK_CAPTURE_SOCKET: /run/bookmark-capture/launcher.sock
+      BOOKMARK_CAPTURE_SPOOL: /capture-spool
+      BOOKMARK_ALLOWED_HOSTS: "${BOOKMARK_ALLOWED_HOSTS:-localhost,127.0.0.1}"
+      BOOKMARK_HTTPS: "${BOOKMARK_HTTPS:-0}"
+      BOOKMARK_CSRF_ORIGINS: "${BOOKMARK_CSRF_ORIGINS:-}"
+      BOOKMARK_TRUST_PROXY: "${BOOKMARK_TRUST_PROXY:-0}"
+      BOOKMARK_PROXY_PEER: "${BOOKMARK_PROXY_PEER:-127.0.0.1}"
+    volumes:
+      - type: bind
+        source: "${BOOKMARK_HOST_DATA:-../data}"
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /run/bookmark-capture
+        target: /run/bookmark-capture
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/lib/bookmark-capture/spool
+        target: /capture-spool
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: [CMD, python, -c, "import json,urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8000/health/ready',timeout=3))['ready']"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
