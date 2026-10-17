@@ -56,6 +56,14 @@ Windows 标准启动入口支持以下两种模式。网络适配器参数可省
 
 ## 手机安装与添加设备
 
+电脑首次使用同一 HTTPS 域名时，也需要信任这份公开 CA。若浏览器提示证书不受信任，核对安装页的指纹后，可在服务器电脑执行以下命令，将 CA 加入当前 Windows 用户的受信任根证书库：
+
+```powershell
+certutil -user -addstore Root .\data\runtime\lan-https\public\linkarium-ca.crt
+```
+
+使用独立数据目录时替换证书路径。该命令会修改当前用户的证书信任，启动脚本不会自动执行；Android 仍需在手机上单独安装。
+
 1. 手机和电脑连接同一 Wi-Fi。在电脑设置页，“安装 CA 证书”位于生成授权按钮右侧；打开它显示的 HTTP 证书安装页，在手机打开同一地址。
 2. 下载公开 CA 证书，在 Android 设置中搜索“安装证书”，选择“CA 证书”并安装。页面提供 CA 的 SHA-256 指纹，服务器终端同时给出对应公开证书文件的位置。具体设置入口可参考 [Android 证书管理](https://support.google.com/pixelphone/answer/2844832?hl=zh-Hans)。
 3. 电脑和手机打开同一 HTTPS 域名。首次为该域名登记 Passkey 时使用服务器终端提供的首次授权码；已有所有者及原凭据保留。
