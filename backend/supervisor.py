@@ -194,10 +194,12 @@ class Supervisor:
         from runtime.performance import span, trace
         from config.paths import DATA_ROOT
         from runtime.network_access import record_connection, clear_connection
+        from runtime.auth_grants import invalidate_initialization_grants, passkey_exists
         try:
             # Recovery can also start children; every startup path belongs to the
             # same cleanup boundary as the steady-state loop.
             with trace("service.startup"):
+                invalidate_initialization_grants()
                 with span("service.recover"):
                     self.recover_interrupted()
                 if RuntimeState.objects.using("default").get(pk=1).maintenance_mode:
@@ -219,14 +221,10 @@ class Supervisor:
             if self.https:
                 print(f"CA 证书：{self.https.ca_path.resolve()}", flush=True)
                 print(f"证书安装页：{self.https.certificate_url}", flush=True)
-            from runtime.auth_grants import passkey_exists, pending_initialization_exists
             from runtime.authentication import normalize_origin
             if not passkey_exists(normalize_origin(origin)[1]):
                 try:
-                    if pending_initialization_exists(origin):
-                        print("已有未使用的首次 Passkey 授权码，重启后仍有效。遗失时运行 passkey_initialize 重新生成。", flush=True)
-                    else:
-                        call_command("passkey_initialize", origin=origin)
+                    call_command("passkey_initialize", origin=origin)
                     sys.stdout.flush()
                 except CommandError:
                     # A valid initialization may finish between readiness and

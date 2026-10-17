@@ -15,7 +15,7 @@ from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from runtime.auth_grants import get_auth_state, issue_console_grant, pending_initialization_exists
+from runtime.auth_grants import get_auth_state, issue_console_grant
 from runtime.models import AuthState, EnrollmentGrant, PasskeyCredential, PasskeyChallenge, FileKeyCredential
 from runtime.test_authentication import AuthenticationTests, ORIGIN, PUBLIC_BACKENDS
 from library.models import LibrarySettings
@@ -88,7 +88,6 @@ class EnrollmentTests(TestCase):
         later = issued + timedelta(days=365)
         data = {"first_passkey_code": fresh["authorization_code"]}
         with patch("django.utils.timezone.now", return_value=later):
-            self.assertTrue(pending_initialization_exists(ORIGIN))
             options = self.post("passkey/register/options", data).json()["data"]
             self.assertEqual(datetime.fromisoformat(options["expires_at"]), later + timedelta(minutes=3))
         with patch("django.utils.timezone.now", return_value=later + timedelta(minutes=3)):
@@ -97,7 +96,6 @@ class EnrollmentTests(TestCase):
             self.assertEqual(response.status_code, 200, response.content)
             self.assertEqual(self.finish(response.json()["data"])[0].status_code, 200)
             self.assertGreaterEqual(self.post("passkey/register/options", data).status_code, 400)
-            self.assertFalse(pending_initialization_exists(ORIGIN))
         self.assertEqual(PasskeyCredential.objects.count(), 1)
 
     def test_bootstrap_code_remains_usable_until_first_registration(self):
@@ -106,10 +104,8 @@ class EnrollmentTests(TestCase):
         grant = issue_console_grant("bootstrap", ORIGIN)
         self.assertIsNone(grant["expires_at"])
         with patch("django.utils.timezone.now", return_value=issued + timedelta(days=365)):
-            self.assertTrue(pending_initialization_exists(ORIGIN))
             self.assertEqual(self.finish(self.begin(grant))[0].status_code, 200)
             self.assertEqual(self.post("passkey/register/options", self.grant_data(grant)).status_code, 409)
-            self.assertFalse(pending_initialization_exists(ORIGIN))
         self.assertEqual(PasskeyCredential.objects.count(), 1)
 
     def test_missing_deadline_cannot_make_device_or_reset_authority_permanent(self):
@@ -119,15 +115,17 @@ class EnrollmentTests(TestCase):
                 EnrollmentGrant.objects.filter(purpose=purpose).update(expires_at=None)
                 self.assertEqual(self.post("passkey/register/options", self.grant_data(grant)).status_code, 403)
 
-    def test_startup_does_not_reuse_locked_revoked_or_wrong_origin_initialization(self):
-        self.assertFalse(pending_initialization_exists(ORIGIN))
-        issue_console_grant("first_passkey", ORIGIN)
-        self.assertTrue(pending_initialization_exists(ORIGIN))
-        self.assertFalse(pending_initialization_exists("http://localhost:18791"))
-        EnrollmentGrant.objects.update(failed_attempts=5)
-        self.assertFalse(pending_initialization_exists(ORIGIN))
-        EnrollmentGrant.objects.update(failed_attempts=0, invalidated_at=timezone.now())
-        self.assertFalse(pending_initialization_exists(ORIGIN))
+    def test_registration_rejects_locked_revoked_or_wrong_origin_initialization(self):
+        for reason in ("locked", "revoked", "wrong_origin"):
+            with self.subTest(reason=reason):
+                origin = "http://localhost:18791" if reason == "wrong_origin" else ORIGIN
+                grant = issue_console_grant("first_passkey", origin)
+                if reason == "locked":
+                    EnrollmentGrant.objects.filter(active_slot="first_passkey").update(failed_attempts=5)
+                elif reason == "revoked":
+                    EnrollmentGrant.objects.filter(active_slot="first_passkey").update(invalidated_at=timezone.now())
+                response = self.post("passkey/register/options", {"first_passkey_code": grant["authorization_code"]})
+                self.assertEqual(response.status_code, 429 if reason == "locked" else 403)
 
     def begin(self, grant, client=None):
         response = self.post("passkey/register/options", self.grant_data(grant), client=client)
@@ -204,6 +202,15 @@ class EnrollmentTests(TestCase):
         self.assertEqual(EnrollmentGrant.objects.filter(active_slot="bootstrap").count(), 1)
         self.assertEqual(self.post("passkey/register/options", self.grant_data(old)).status_code, 403)
         self.assertEqual(self.post("passkey/register/options", self.grant_data(fresh)).status_code, 200)
+
+    def test_first_passkey_reissue_excludes_previous_code_when_random_values_repeat(self):
+        with patch("runtime.auth_grants.secrets.randbelow", return_value=12345678):
+            previous = issue_console_grant("first_passkey", ORIGIN)
+        with patch("runtime.auth_grants.secrets.randbelow", side_effect=(12345678, 87654321)):
+            fresh = issue_console_grant("first_passkey", ORIGIN)
+        self.assertEqual(fresh["authorization_code"], "87654321")
+        self.assertEqual(self.post("passkey/register/options", {"first_passkey_code": previous["authorization_code"]}).status_code, 403)
+        self.assertEqual(self.post("passkey/register/options", {"first_passkey_code": fresh["authorization_code"]}).status_code, 200)
 
     def test_existing_owner_without_credentials_never_reopens_bootstrap(self):
         from library.errors import ApiError

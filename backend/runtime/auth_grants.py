@@ -58,17 +58,10 @@ def passkey_exists(rp_id):
     return PasskeyCredential.objects.filter(user__username=settings.BOOKMARK_OWNER, rp_id=rp_id).exists()
 
 
-def pending_initialization_exists(origin):
-    """Startup retains usable first-Passkey codes; explicit issuance replaces them."""
-    from .authentication import normalize_origin
-    origin, _ = normalize_origin(origin)
-    purpose = "first_passkey" if owner_exists() else "bootstrap"
-    grant = EnrollmentGrant.objects.filter(active_slot=purpose).first()
-    try:
-        validate_grant(grant, origin)
-    except ApiError:
-        return False
-    return True
+def invalidate_initialization_grants():
+    """Close old first-Passkey codes before startup or recovery exposes a Web entry."""
+    EnrollmentGrant.objects.filter(purpose__in=INITIAL_PASSKEY_PURPOSES,
+        active_slot__isnull=False).update(active_slot=None, invalidated_at=timezone.now())
 
 
 def _issue(purpose, origin, rp_id, user, issuer_kind, issuer_id, name):
@@ -85,6 +78,11 @@ def _issue(purpose, origin, rp_id, user, issuer_kind, issuer_id, name):
             raise ApiError("AUTH_ALREADY_INITIALIZED", "已有 Passkey，请登录后添加其他设备", 409)
         EnrollmentGrant.objects.filter(active_slot="first_passkey").update(active_slot=None, invalidated_at=now)
     token, code = secrets.token_urlsafe(32), f"{secrets.randbelow(100000000):08d}"
+    if purpose in INITIAL_PASSKEY_PURPOSES:
+        # These codes have no URL token: a repeated number would revive an old code.
+        previous_grants = list(EnrollmentGrant.objects.filter(purpose__in=INITIAL_PASSKEY_PURPOSES).only("id", "purpose", "code_hash"))
+        while any(hmac.compare_digest(previous.code_hash, _digest_code(previous, code)) for previous in previous_grants):
+            code = f"{secrets.randbelow(100000000):08d}"
     grant = EnrollmentGrant(id=uuid.uuid4(), purpose=purpose, user=user, origin=origin, rp_id=rp_id,
         credential_epoch=state.credential_epoch, issuer_kind=issuer_kind, issuer_credential_id=issuer_id,
         token_hash=hashlib.sha256(token.encode()).hexdigest(), name=name,

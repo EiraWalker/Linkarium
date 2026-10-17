@@ -252,16 +252,56 @@ with InstanceLock(DATA_ROOT / 'runtime' / 'supervisor.lock'):
         self.assertIsNotNone(response, stdout + stderr)
         return response, stdout
 
-    def test_fresh_supervisor_serves_uninitialized_session_and_retains_code_on_restart(self):
+    def test_fresh_supervisor_reissues_initialization_code_on_every_restart(self):
         response, stdout = self.supervisor_session()
         self.assertTrue(response["data"]["initialization_required"])
         self.assertFalse(response["data"]["authenticated"])
         self.assertRegex(stdout, r"Authorization code: [0-9]{8}")
+        previous_code = re.search(r"Authorization code: ([0-9]{8})", stdout).group(1)
         grant_id = self.scalar("SELECT id FROM runtime_enrollmentgrant WHERE active_slot='bootstrap'")
         # Keep the canonical origin fixed when restarting the real child processes.
         response, stdout = self.supervisor_session()
         self.assertTrue(response["data"]["initialization_required"])
-        self.assertIn("重启后仍有效", stdout)
-        self.assertNotIn("Authorization code:", stdout)
-        self.assertEqual(self.scalar("SELECT id FROM runtime_enrollmentgrant WHERE active_slot='bootstrap'"), grant_id)
+        self.assertRegex(stdout, r"Authorization code: [0-9]{8}")
+        self.assertNotEqual(re.search(r"Authorization code: ([0-9]{8})", stdout).group(1), previous_code)
+        self.assertNotEqual(self.scalar("SELECT id FROM runtime_enrollmentgrant WHERE active_slot='bootstrap'"), grant_id)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM runtime_enrollmentgrant WHERE invalidated_at IS NOT NULL"), 1)
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM auth_user"), 0)
+
+    def test_existing_owner_receives_new_first_passkey_code_on_restart_without_losing_file_key(self):
+        key = Path(self.temp.name) / "login.pem"
+        self.run_command("file_key_setup", "--generate", str(key))
+        self.run_command("initialize", "--private-key", str(key))
+        owner_id = self.scalar("SELECT id FROM auth_user")
+        public_key = self.scalar("SELECT public_key FROM runtime_filekeycredential")
+        _, stdout = self.supervisor_session()
+        previous_code = re.search(r"Authorization code: ([0-9]{8})", stdout).group(1)
+        previous_grant = self.scalar("SELECT id FROM runtime_enrollmentgrant WHERE active_slot='first_passkey'")
+        response, stdout = self.supervisor_session()
+        self.assertFalse(response["data"]["initialization_required"])
+        self.assertFalse(response["data"]["passkey_configured"])
+        self.assertIn("First Passkey for the existing owner", stdout)
+        self.assertNotEqual(re.search(r"Authorization code: ([0-9]{8})", stdout).group(1), previous_code)
+        self.assertNotEqual(self.scalar("SELECT id FROM runtime_enrollmentgrant WHERE active_slot='first_passkey'"), previous_grant)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM runtime_enrollmentgrant WHERE invalidated_at IS NOT NULL"), 1)
+        self.assertEqual(self.scalar("SELECT id FROM auth_user"), owner_id)
+        self.assertEqual(self.scalar("SELECT public_key FROM runtime_filekeycredential"), public_key)
+
+    def test_failed_startup_invalidates_previous_initialization_before_web_can_listen(self):
+        self.run_command("initialize")
+        with socket.socket() as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            port = occupied.getsockname()[1]
+            self.env["BOOKMARK_PASSKEY_ORIGIN"] = f"http://localhost:{port}"
+            self.run_command("passkey_initialize")
+            result = self.run_code(f"""
+from config.paths import DATA_ROOT
+from runtime.instance_lock import InstanceLock
+from supervisor import Supervisor
+with InstanceLock(DATA_ROOT / 'runtime/supervisor.lock'):
+    Supervisor(port={port}).run()
+""", success=False)
+        self.assertIn("already in use", result.stderr)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM runtime_enrollmentgrant WHERE active_slot='bootstrap'"), 0)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM runtime_enrollmentgrant WHERE invalidated_at IS NOT NULL"), 1)
