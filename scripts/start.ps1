@@ -4,6 +4,7 @@ param(
     [switch]$DevelopmentCapture,
     [switch]$PublicDns,
     [switch]$PerformanceMonitoring,
+    [string]$PasskeyOrigin,
     [switch]$DebugAuth
 )
 $ErrorActionPreference = 'Stop'
@@ -12,11 +13,13 @@ Set-Location -LiteralPath $projectRoot
 $previousCaptureMode = $env:BOOKMARK_CAPTURE_MODE
 $previousDnsMode = $env:BOOKMARK_CAPTURE_DNS_MODE
 $previousPerformanceMode = $env:BOOKMARK_PERF
+$previousPasskeyOrigin = $env:BOOKMARK_PASSKEY_ORIGIN
 try {
     if ($PublicDns -and -not $DevelopmentCapture) { throw '-PublicDns requires -DevelopmentCapture' }
     if ($DevelopmentCapture) { $env:BOOKMARK_CAPTURE_MODE = 'development' }
     if ($PublicDns) { $env:BOOKMARK_CAPTURE_DNS_MODE = 'public-doh' }
     if ($PerformanceMonitoring) { $env:BOOKMARK_PERF = '1' }
+    if ($PasskeyOrigin) { $env:BOOKMARK_PASSKEY_ORIGIN = $PasskeyOrigin }
     $supervisorArguments = @('-X', 'utf8', (Join-Path $projectRoot 'backend\supervisor.py'), '--host', $BindAddress, '--port', "$Port")
     if (-not $PSBoundParameters.ContainsKey('Port')) { $supervisorArguments += '--auto-port' }
     if ($DebugAuth) { $supervisorArguments += '--debug' }
@@ -26,4 +29,5 @@ try {
     $env:BOOKMARK_CAPTURE_MODE = $previousCaptureMode
     $env:BOOKMARK_CAPTURE_DNS_MODE = $previousDnsMode
     $env:BOOKMARK_PERF = $previousPerformanceMode
+    $env:BOOKMARK_PASSKEY_ORIGIN = $previousPasskeyOrigin
 }

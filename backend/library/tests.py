@@ -1,3 +1,4 @@
+from runtime.testing import force_credential_login
 import hashlib
 import json
 import tempfile
@@ -23,7 +24,7 @@ class CatalogTests(TestCase):
         RuntimeState.objects.create(pk=1)
         LibrarySettings.objects.create(pk=1)
         get_user_model().objects.create_user("owner", password="test-only-secret")
-        self.client.force_login(get_user_model().objects.get(username="owner"))
+        force_credential_login(self.client, get_user_model().objects.get(username="owner"))
 
     def request_json(self, method, path, data=None, **extra):
         return getattr(self.client, method)("/api/v1/" + path, data=json.dumps(data or {}), content_type="application/json", **extra)
@@ -120,7 +121,7 @@ class CatalogTests(TestCase):
         self.assertEqual(second["data"]["current_group"]["id"], str(active.id))
         # A new client/device sees the same durable results and task IDs.
         other = Client()
-        other.force_login(get_user_model().objects.get(username="owner"))
+        force_credential_login(other, get_user_model().objects.get(username="owner"))
         self.assertEqual(other.get("/api/v1/job-groups").json()["data"]["pending_proposals"], 1)
         self.assertEqual(other.get(f"/api/v1/classification/proposals?group_id={active.id}").json()["page"]["total"], 1)
         self.assertEqual(Client().get("/api/v1/job-groups").status_code, 401)
@@ -659,7 +660,7 @@ class ImportWorkflowTests(TestCase):
         RuntimeState.objects.create(pk=1)
         LibrarySettings.objects.create(pk=1)
         user = get_user_model().objects.create_user("owner", password="test-only-secret")
-        self.client.force_login(user)
+        force_credential_login(self.client, user)
 
     def imported(self, count=1):
         from .importing import preview_import, start_import

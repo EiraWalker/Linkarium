@@ -1,0 +1,8 @@
+.form { display: grid; gap: 14px; min-width: 0; }
+.form > label { margin: 0; }
+.form input { min-width: 0; }
+.form > button { justify-self: start; }
+.heading { font-size: 19px; margin: 0 0 14px; }
+.actions { display: grid; gap: 12px; margin-top: 16px; }
+.status { margin: 12px 0; line-height: 1.6; overflow-wrap: anywhere; }
+.back { margin-top: 16px; }

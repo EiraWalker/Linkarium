@@ -109,6 +109,15 @@ def _erase_runtime_data(operation):
         from django.contrib.auth import get_user_model
         from django.contrib.auth.models import Group
         from django.contrib.sessions.models import Session
+        from runtime.auth_grants import get_auth_state
+        from runtime.models import EnrollmentGrant, PasskeyChallenge, PasskeySetupToken
+        auth_state = get_auth_state()
+        auth_state.credential_epoch += 1
+        auth_state.webauthn_user_handle = secrets.token_bytes(32)
+        auth_state.save(update_fields=["credential_epoch", "webauthn_user_handle"])
+        PasskeyChallenge.objects.all().delete()
+        EnrollmentGrant.objects.all().delete()
+        PasskeySetupToken.objects.all().delete()
         Session.objects.using("default").all().delete()
         ProviderSecret.objects.using("default").all().delete()
         RuntimeIdempotency.objects.using("default").all().delete()

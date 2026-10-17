@@ -1,3 +1,4 @@
+from runtime.testing import force_credential_login
 import hashlib
 import json
 import os
@@ -441,13 +442,13 @@ class CatalogPortabilityTests(TransactionTestCase):
         client = Client(enforce_csrf_checks=True)
         self.assertEqual(client.get("/api/v1/runtime/status").status_code, 401)
         owner = get_user_model().objects.db_manager("default").create_user(username="owner", password="test-only-cookie-password")
-        client.force_login(owner, backend="runtime.authentication.PublicKeyBackend")
+        force_credential_login(client, owner)
         response = client.get("/api/v1/runtime/status")
         self.assertEqual(response.status_code, 200)
         self.assertIn("maintenance_mode", response.json()["data"])
         client.logout()
         other = get_user_model().objects.db_manager("default").create_user(username="other", password="test-only-cookie-password")
-        client.force_login(other, backend="runtime.authentication.PublicKeyBackend")
+        force_credential_login(client, other)
         self.assertEqual(client.get("/api/v1/runtime/status").status_code, 401)
 
 

@@ -17,8 +17,14 @@
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| GET | /session | `{authenticated, csrf_token, initialization_required, maintenance_mode}`；登录后附 active_generation 和 library_epoch；token 是 masked 值 |
-| POST | /session/login | body 仅 password；固定 owner 登录，成功后重新 GET /session 取得轮换后的 token |
+| GET | /session | `{authenticated, csrf_token, initialization_required, maintenance_mode, auth_mode, password_login_enabled, passkey_configured, file_key_configured, passkey_origin, passkey_available, credential_id, auth_expires_at}`；登录后附 active_generation 和 library_epoch；token 是 masked 值 |
+| POST | /session/login | 仅显式调试模式接受 password；正常模式禁止密码登录 |
+| POST | /session/passkey/register/options、/verify | 首次码、本机有效凭据会话、或链接标识＋独立码授权注册；用途由服务器授权记录确定 |
+| POST | /session/passkey/login/options、/verify | 浏览器 WebAuthn 登录；校验来源、RP ID、challenge、签名和用户验证 |
+| POST | /session/key/options、/verify | 可选 Ed25519 文件密钥登录；浏览器本地签名，只上传签名 |
+| POST | /session/passkey/grants | 有效凭据会话签发五分钟单次添加授权；201 返回 enrollment_url、authorization_code、expires_at |
+| GET | /session/passkeys | items、can_add；记录含名称、RP ID、创建和最后使用时间、is_current、can_delete |
+| PATCH/DELETE | /session/passkeys/{id} | body `{name}` 重命名；删除返回 deleted、logged_out，服务端原子检查最后可用凭据 |
 | POST | /session/logout | 撤销当前会话 |
 | GET/PATCH | /settings | 默认刷新间隔、前端偏好和 revision |
 | GET/PATCH | /capture-network | 后端本机采集代理：direct/clash/manual；GET 返回检测及使用地址，PATCH 需 development 采集模式及 CSRF，详见 capture-proxy.md |
@@ -28,11 +34,15 @@
 | POST | /data/clear | 确认清空所有网站数据、快照、任务、应用内备份；保留密码、刷新设置和 AI 配置/密钥 |
 | POST | /data/reset | 确认删除全部用户数据，包括密码、会话、AI 配置和密钥；返回密码初始化状态 |
 
-密码初始化/重置走部署终端受控命令。运行库保留密码，整库恢复后要求重新登录。
+首次初始化由终端 `passkey_initialize` 输出成功使用前不过期的初始化码，服务重启保留该授权，网页完成首个 Passkey 后建立唯一所有者。已有所有者、尚无 Passkey 时同一命令签发相同期限的首个 Passkey 码，保留原账号和文件密钥。手动重新生成会替换旧码；错误五次锁定；注册 challenge 仍为三分钟。`passkey_reset` 只签发十分钟的重置入口，新的 Passkey 成功提交时才撤销旧 Passkey、文件密钥、授权及会话，收藏数据保留。完整流程见 [认证说明](authentication.md)。整库恢复后要求重新登录，不从备份恢复认证记录。
+
+注册 options 输入严格互斥：`{name}`、`{name,bootstrap_code}`、`{name,first_passkey_code}`、`{name,enrollment_token,authorization_code}`。过时 `setup_token` 被拒绝。verify 输入 `{challenge_id,credential}`，返回 `registered/authenticated/credential_id/already_completed/registration_mode`；`registration_mode` 为服务器验证的 `local/bootstrap/first_passkey/add_device/reset`，前端据此显示重置结果。同一提交重试不重复登记或再次发放登录 cookie；响应丢失后读取 `/session`，必要时使用刚创建的 Passkey 登录。授权码不出现在链接、二维码、日志或查询接口中。`first_passkey_code` 仅由终端签发并绑定现有所有者、来源与认证版本，只在当前 RP 尚无 Passkey 时有效，保留原账号和文件密钥。
+
+正常会话绑定具体登录凭据和认证版本，自登录成功起固定十四天到期，不因访问续期。删除凭据使它的所有会话在下一次受保护请求失效；本机添加保持原会话关联和期限。授权错误包括 `AUTH_GRANT_INVALID/EXPIRED/LOCKED/USED`、`AUTH_ALREADY_INITIALIZED`、`AUTH_LAST_CREDENTIAL`、`AUTH_REVOKED`、`AUTH_ATTEMPT_IN_PROGRESS`。
 
 数据管理端点要求 owner、CSRF 和 `Idempotency-Key`，body 为 `{confirmation:"清空仓库"或"重置数据",library_epoch:当前版本}`。确认授权清理执行时的整个仓库；与逐项删除的影响预览不同，不保留确认后新增的网站。接受后立即进入维护状态，返回 202 的 MaintenanceOperation，通过 `/maintenance-operations/{id}` 查询。不会自动生成保留旧数据的备份，已有应用内备份、恢复候选和上传/采集临时文件也会删除；用户自行下载到应用数据目录之外的备份不受影响。
 
-重置删除 owner 和所有会话，轮换应用生成的签名密钥；部署者通过环境变量配置的签名密钥仍由部署配置管理。匿名 `/session` 的 `initialization_required=true` 提示在软件目录执行 `.\.venv\Scripts\python.exe backend\manage.py initialize`，没有开放匿名密码注册接口。
+数据重置删除 owner、登录凭据、授权和所有会话，轮换应用生成的签名密钥；部署者通过环境变量配置的签名密钥仍由部署配置管理。匿名 `/session` 的 `initialization_required=true` 显示首次配置界面，管理员通过 `passkey_initialize` 获取新的初始化码。
 
 AIProfile 的 endpoint/协议修改会撤销对应运行凭据的验证状态。恢复后 AI 调用先禁用；相同 profile UUID 不能绕过地址/协议指纹与当前 library_epoch 校验。用户显式验证匹配的绑定后方能继续调用；不匹配时不能把当前密钥用于测试备份中的新地址。密钥不进入任何业务 Job payload 或业务备份。
 

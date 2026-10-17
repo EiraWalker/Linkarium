@@ -1,3 +1,4 @@
+from runtime.testing import force_credential_login
 """Current capture errors and recovery batches are distinct from task history."""
 from io import StringIO
 from contextlib import contextmanager
@@ -24,7 +25,7 @@ class CaptureFailureDisplayTests(TestCase):
     def setUp(self):
         RuntimeState.objects.create(pk=1)
         LibrarySettings.objects.create(pk=1)
-        self.client.force_login(get_user_model().objects.create_user("owner", password="fixture-only"))
+        force_credential_login(self.client, get_user_model().objects.create_user("owner", password="fixture-only"))
         self.bookmark = Bookmark.objects.create(original_url="https://example.org/",
             canonical_url="https://example.org/", domain="example.org", snapshot_enabled=True)
         queue.enqueue("capture", self.bookmark.id, "desktop", priority=60,

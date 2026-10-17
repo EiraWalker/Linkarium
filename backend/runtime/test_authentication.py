@@ -17,7 +17,7 @@ from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 from webauthn.helpers import bytes_to_base64url
 from library.models import LibrarySettings
-from runtime.authentication import issue_setup_token
+from runtime.auth_grants import get_auth_state, issue_console_grant
 from runtime.models import RuntimeState, PasskeyCredential, PasskeySetupToken, PasskeyChallenge, FileKeyCredential
 
 PUBLIC_BACKENDS = ["axes.backends.AxesStandaloneBackend", "runtime.authentication.PublicKeyBackend"]
@@ -46,8 +46,10 @@ class AuthenticationTests(TestCase):
 
     def options(self, purpose="register", token=None):
         if purpose == "register" and token is None:
-            token = issue_setup_token(ORIGIN)
-        response = self.post(f"passkey/{purpose}/options", {"setup_token": token} if purpose == "register" else {})
+            token = issue_console_grant("add_device", ORIGIN)
+        data = {"enrollment_token": token["enrollment_url"].split("=", 1)[1],
+            "authorization_code": token["authorization_code"], "name": "Passkey"} if purpose == "register" else {}
+        response = self.post(f"passkey/{purpose}/options", data)
         self.assertEqual(response.status_code, 200, response.content)
         return response.json()["data"]
 
@@ -68,7 +70,7 @@ class AuthenticationTests(TestCase):
         else:
             response["authenticatorData"] = bytes_to_base64url(auth_data)
             response["signature"] = bytes_to_base64url(self.private.sign(auth_data + hashlib.sha256(client_data).digest(), ec.ECDSA(hashes.SHA256())))
-            response["userHandle"] = bytes_to_base64url(f"website-owner-{self.user.id}".encode())
+            response["userHandle"] = bytes_to_base64url(bytes(get_auth_state().webauthn_user_handle))
         result["response"] = response
         return result
 
@@ -100,7 +102,7 @@ class AuthenticationTests(TestCase):
 
     def test_registration_requires_local_admin_grant(self):
         self.assertEqual(self.post("passkey/register/options", {}).status_code, 403)
-        self.assertFalse(PasskeyChallenge.objects.exists())
+        self.assertFalse(PasskeyChallenge.objects.filter(state="pending").exists())
 
     def test_origin_and_user_verification_are_enforced(self):
         for origin, verified in (("https://evil.example", True), (ORIGIN, False)):
@@ -126,7 +128,7 @@ class AuthenticationTests(TestCase):
         credential["response"]["signature"] = bytes_to_base64url(b"invalid")
         data = {"challenge_id": options["challenge_id"], "credential": credential}
         self.assertEqual(self.post("passkey/login/verify", data).status_code, 400)
-        self.assertFalse(PasskeyChallenge.objects.exists())
+        self.assertFalse(PasskeyChallenge.objects.filter(purpose="login").exists())
 
     def test_password_session_does_not_survive_switch_to_normal_mode(self):
         with override_settings(BOOKMARK_AUTH_DEBUG=True, AUTHENTICATION_BACKENDS=DEBUG_BACKENDS):
@@ -183,12 +185,11 @@ class AuthenticationTests(TestCase):
             self.assertEqual(path.read_bytes(), b"preserve existing private key")
             self.assertFalse(FileKeyCredential.objects.exists())
 
-    def test_normal_initialize_requires_explicit_valid_private_key_before_migrations(self):
-        for options in ({}, {"no_password": True}, {"private_key": "missing-key.pem"}):
-            with self.subTest(options=options), patch("runtime.management.commands.initialize.call_command") as migrate:
-                with self.assertRaises(CommandError):
-                    call_command("initialize", stdout=StringIO(), **options)
-                migrate.assert_not_called()
+    def test_normal_initialize_rejects_invalid_explicit_private_key_before_preparing(self):
+        with patch("runtime.management.commands.initialize.prepare_databases") as prepare:
+            with self.assertRaises(CommandError):
+                call_command("initialize", private_key="missing-key.pem", stdout=StringIO())
+            prepare.assert_not_called()
         self.assertFalse(FileKeyCredential.objects.exists())
 
     def test_initialize_registers_only_public_half_and_is_idempotent(self):
@@ -198,7 +199,7 @@ class AuthenticationTests(TestCase):
             private = generate_private_key(path)
             original = path.read_bytes()
             old_password = self.user.password
-            with patch("runtime.management.commands.initialize.call_command"):
+            with patch("runtime.management.commands.initialize.prepare_databases"):
                 for _ in range(2):
                     call_command("initialize", private_key=str(path), stdout=StringIO())
             self.assertEqual(FileKeyCredential.objects.count(), 1)
@@ -215,7 +216,7 @@ class AuthenticationTests(TestCase):
             call_command("file_key_setup", generate=str(path), stdout=StringIO())
             self.assertTrue(path.is_file())
             self.assertFalse(get_user_model().objects.exists())
-            with patch("runtime.management.commands.initialize.call_command"):
+            with patch("runtime.management.commands.initialize.prepare_databases"):
                 call_command("initialize", private_key=str(path), stdout=StringIO())
             owner = get_user_model().objects.get(username="owner")
             self.assertFalse(owner.has_usable_password())
@@ -231,11 +232,15 @@ class AuthenticationTests(TestCase):
         inventory = self.client.get("/api/v1/session/passkeys").json()["data"]
         self.assertTrue(inventory["can_add"])
         self.assertEqual(inventory["items"], [])
-        options = self.post("passkey/register/options", {}).json()["data"]
+        original_session = dict(self.client.session)
+        original_key = self.client.session.session_key
+        options = self.post("passkey/register/options", {"name": "我的电脑"}).json()["data"]
         response = self.post("passkey/register/verify", {"challenge_id": options["challenge_id"],
             "credential": self.credential(options), "name": "我的电脑"})
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(PasskeyCredential.objects.get().name, "我的电脑")
+        self.assertEqual(dict(self.client.session), original_session)
+        self.assertEqual(self.client.session.session_key, original_key)
         self.assertFalse(PasskeySetupToken.objects.exists())
         self.assertEqual(self.client.get("/api/v1/session/passkeys").json()["data"]["items"][0]["name"], "我的电脑")
 

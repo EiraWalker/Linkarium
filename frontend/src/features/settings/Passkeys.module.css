@@ -1,0 +1,25 @@
+.list { list-style: none; padding: 0; margin: 0 0 20px; }
+.item { padding: 16px 0; border-bottom: 1px solid var(--border); }
+.row { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+.name { margin: 0; overflow-wrap: anywhere; font-size: 14px; }
+.current { display: inline-block; margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--muted); }
+.metadata { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.metadata > span { overflow-wrap: anywhere; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.rename { display: grid; gap: 12px; }
+.rename > label { margin: 0; }
+.local { padding-top: 12px; }
+.local h3, .deviceEnrollment h3 { font-size: 14px; margin: 0 0 14px; }
+.deviceEnrollment { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 24px; }
+.grant { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; align-items: start; margin: 20px 0; }
+.qr { max-width: 100%; height: auto !important; border-radius: 6px; }
+.grantFields { display: grid; gap: 10px; min-width: 0; }
+.grantFields > label { margin: 0; }
+.grantFields > button { justify-self: start; }
+.grantFields input { width: 100%; min-width: 0; }
+.authorizationCode { font-family: ui-monospace, monospace; letter-spacing: .12em; }
+.lastCredential { margin-top: 8px; color: var(--muted); }
+@media (max-width: 600px) {
+  .row { flex-direction: column; gap: 12px; }
+  .grant { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+}

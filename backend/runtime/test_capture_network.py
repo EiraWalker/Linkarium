@@ -1,3 +1,4 @@
+from runtime.testing import force_credential_login
 """Capture proxy settings exercise the authenticated API without touching live configuration."""
 import json
 from pathlib import Path
@@ -21,7 +22,7 @@ class CaptureNetworkApiTests(TestCase):
         RuntimeState.objects.create(pk=1)
         LibrarySettings.objects.create(pk=1)
         self.owner = get_user_model().objects.create_user("owner", password="test-password")
-        self.client.force_login(self.owner)
+        force_credential_login(self.client, self.owner)
         temporary = tempfile.TemporaryDirectory(prefix="capture-network-api-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -97,7 +98,7 @@ class CaptureNetworkApiTests(TestCase):
 
     def test_valid_session_still_requires_csrf_for_changes(self):
         client = Client(enforce_csrf_checks=True)
-        client.force_login(self.owner)
+        force_credential_login(client, self.owner)
         response = client.patch(self.endpoint, json.dumps({"mode": "clash"}), content_type="application/json")
         self.assertEqual(response.status_code, 403)
         self.assertFalse(self.config_file.exists())

@@ -4,6 +4,11 @@ from pathlib import Path
 
 routes = {
     "/session": ["get"], "/session/login": ["post"], "/session/logout": ["post"],
+    "/session/passkey/register/options": ["post"], "/session/passkey/register/verify": ["post"],
+    "/session/passkey/login/options": ["post"], "/session/passkey/login/verify": ["post"],
+    "/session/key/options": ["post"], "/session/key/verify": ["post"],
+    "/session/passkey/grants": ["post"], "/session/passkeys": ["get"],
+    "/session/passkeys/{id}": ["patch", "delete"],
     "/settings": ["get", "patch"], "/capture-network": ["get", "patch"], "/runtime/status": ["get"],
     "/bookmarks": ["get", "post"], "/bookmarks/{id}": ["get", "patch"],
     "/bookmarks/delete-preview": ["post"], "/bookmarks/bulk": ["post"],
@@ -43,6 +48,25 @@ schemas = {
     "ResetDataConfirmation": {"type": "object", "required": ["confirmation", "library_epoch"], "properties": {"confirmation": {"const": "重置数据"}, "library_epoch": {"type": "integer", "minimum": 1}}},
 }
 paths = {}
+schemas["PasskeyName"] = {"type": "object", "required": ["name"], "properties": {
+    "name": {"type": "string", "minLength": 1, "maxLength": 100}}}
+schemas["PasskeyRegistrationOptions"] = {"description": "Choose exactly one authority: local credential session, terminal initialization code, or enrollment token plus independent code. Explicit authority never falls back to the existing session.", "oneOf": [
+    {"allOf": [{"$ref": "#/components/schemas/PasskeyName"}, {"not": {"anyOf": [{"required": [key]} for key in ("bootstrap_code", "first_passkey_code", "enrollment_token", "authorization_code", "setup_token")]}}]},
+    {"type": "object", "required": ["name", "bootstrap_code"], "additionalProperties": False, "properties": {
+        "name": schemas["PasskeyName"]["properties"]["name"], "bootstrap_code": {"type": "string", "pattern": "^[0-9]{8}$", "writeOnly": True}}},
+    {"type": "object", "required": ["name", "first_passkey_code"], "additionalProperties": False, "properties": {
+        "name": schemas["PasskeyName"]["properties"]["name"], "first_passkey_code": {"type": "string", "pattern": "^[0-9]{8}$", "writeOnly": True}}},
+    {"type": "object", "required": ["name", "enrollment_token", "authorization_code"], "additionalProperties": False, "properties": {
+        "name": schemas["PasskeyName"]["properties"]["name"], "enrollment_token": {"type": "string", "writeOnly": True},
+        "authorization_code": {"type": "string", "pattern": "^[0-9]{8}$", "writeOnly": True}}},
+]}
+schemas["PasskeyVerification"] = {"type": "object", "required": ["challenge_id", "credential"], "properties": {
+    "challenge_id": {"type": "string", "format": "uuid"}, "credential": {"type": "object", "description": "WebAuthn JSON credential returned by the browser"}}}
+schemas["FileKeyVerification"] = {"type": "object", "required": ["challenge_id", "signature"], "properties": {
+    "challenge_id": {"type": "string", "format": "uuid"}, "signature": {"type": "string", "description": "Base64url Ed25519 signature; never the private key file"}}}
+schemas["EnrollmentGrant"] = {"type": "object", "required": ["enrollment_url", "authorization_code", "expires_at"], "properties": {
+    "enrollment_url": {"type": "string", "format": "uri"}, "authorization_code": {"type": "string", "description": "Shown once; never embedded in the URL or QR"},
+    "expires_at": {"type": "string", "format": "date-time", "description": "Absolute deadline, five minutes from issuance"}}}
 schemas["BookmarkRevisionItems"] = {**schemas["RevisionItems"], "maxItems": 1000}
 schemas["ClassificationReview"] = {"type": "object", "required": ["items"], "properties": {"items": {"$ref": "#/components/schemas/BookmarkRevisionItems"}, "tree_revision": {"type": "integer", "minimum": 1}}}
 schemas["BulkBookmarks"]["properties"]["items"] = {"$ref": "#/components/schemas/BookmarkRevisionItems"}
@@ -68,6 +92,14 @@ for route, methods in routes.items():
                 name = "CaptureNetworkWrite"
             if route in ("/data/clear", "/data/reset"):
                 name = "ClearDataConfirmation" if route == "/data/clear" else "ResetDataConfirmation"
+            if route == "/session/passkey/register/options":
+                name = "PasskeyRegistrationOptions"
+            if route in ("/session/passkey/register/verify", "/session/passkey/login/verify"):
+                name = "PasskeyVerification"
+            if route == "/session/key/verify":
+                name = "FileKeyVerification"
+            if route == "/session/passkeys/{id}" and method == "patch":
+                name = "PasskeyName"
             content = {"application/json": {"schema": {"$ref": f"#/components/schemas/{name}"} if name else {"type": "object"}}}
             if route in ("/imports", "/imports/preview", "/restores/validate"):
                 content = {"multipart/form-data": {"schema": {"type": "object", "required": ["file"], "properties": {"file": {"type": "string", "format": "binary"}}}}}
@@ -76,6 +108,24 @@ for route, methods in routes.items():
             entry["responses"]["201"] = {"description": "Created"}
         if route in ("/session", "/session/login"):
             entry["security"] = []
+        if route.startswith(("/session/passkey/register/", "/session/passkey/login/", "/session/key/")):
+            entry["security"] = []
+        if route.startswith("/session/"):
+            parameters = [parameter for parameter in parameters if parameter["name"] != "Idempotency-Key"]
+            entry["responses"].pop("202", None)
+            entry["responses"].pop("201", None)
+        if route == "/session/passkey/grants":
+            entry["requestBody"]["required"] = False
+            entry["responses"].pop("200", None)
+            entry["responses"]["201"] = {"description": "Independent link and code, valid five minutes; requires a valid credential session", "content": {
+                "application/json": {"schema": {"type": "object", "properties": {"data": {"$ref": "#/components/schemas/EnrollmentGrant"}}}}}}
+        if route == "/session/passkeys/{id}" and method == "delete":
+            entry.pop("requestBody", None)
+            entry["description"] = "Atomically preserve a usable login method. Revoke all sessions tied to this credential; return deleted and logged_out."
+        if route == "/session/passkey/register/verify":
+            entry["description"] = "Successful registration returns registered/authenticated/credential_id/already_completed/registration_mode. The mode is the server-authorized local/bootstrap/first_passkey/add_device/reset purpose. Same-payload completion replay never creates a new login session."
+        if route == "/session/login":
+            entry["description"] = "Debug password only when BOOKMARK_AUTH_DEBUG is enabled; normal mode always rejects."
         if route.endswith("/preview") and route.startswith("/snapshots/"):
             entry["responses"]["200"] = {"description": "Private sandboxed immutable HTML", "content": {"text/html": {"schema": {"type": "string"}}}}
         if route.endswith("/download"):
@@ -94,7 +144,7 @@ for route, methods in routes.items():
             parameters.append({"name": "selection", "in": "query", "schema": {"type": "boolean"}, "description": "Return all matching {id,revision} entries across pages, at most 1000; preserve status and scope filters."})
             for name in ("status", "import_id", "bookmark_id", "group_id", "page", "page_size"):
                 parameters.append({"name": name, "in": "query", "schema": {"type": "string"}})
-        for code in (400, 401, 403, 404, 409, 413, 429, 503):
+        for code in ((400, 401, 403, 404, 409, 410, 413, 429, 503) if route.startswith("/session") else (400, 401, 403, 404, 409, 413, 429, 503)):
             entry["responses"][str(code)] = {"description": "Structured error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
         entry["parameters"] = parameters
         item[method] = entry

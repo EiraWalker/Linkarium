@@ -35,6 +35,32 @@ class PasskeySetupToken(models.Model):
     expires_at = models.DateTimeField()
 
 
+class AuthState(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1)
+    credential_epoch = models.PositiveBigIntegerField(default=1)
+    webauthn_user_handle = models.BinaryField()
+
+
+class EnrollmentGrant(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    purpose = models.CharField(max_length=16)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.CASCADE)
+    origin = models.CharField(max_length=300)
+    rp_id = models.CharField(max_length=253)
+    credential_epoch = models.PositiveBigIntegerField()
+    issuer_kind = models.CharField(max_length=16)
+    issuer_credential_id = models.UUIDField(null=True)
+    token_hash = models.CharField(max_length=64, unique=True)
+    code_hash = models.CharField(max_length=64)
+    name = models.CharField(max_length=100, default="Passkey")
+    active_slot = models.CharField(max_length=16, null=True, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(null=True)
+    consumed_at = models.DateTimeField(null=True)
+    invalidated_at = models.DateTimeField(null=True)
+    failed_attempts = models.PositiveSmallIntegerField(default=0)
+
+
 class PasskeyChallenge(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     session_hash = models.CharField(max_length=64, db_index=True)
@@ -44,6 +70,17 @@ class PasskeyChallenge(models.Model):
     rp_id = models.CharField(max_length=253)
     setup = models.ForeignKey(PasskeySetupToken, on_delete=models.CASCADE, null=True)
     expires_at = models.DateTimeField()
+    grant = models.ForeignKey(EnrollmentGrant, null=True, on_delete=models.SET_NULL)
+    registration_mode = models.CharField(max_length=16, blank=True)
+    credential_epoch = models.PositiveBigIntegerField(default=1)
+    name = models.CharField(max_length=100, default="Passkey")
+    issuer_kind = models.CharField(max_length=16, blank=True)
+    issuer_credential_id = models.UUIDField(null=True)
+    state = models.CharField(max_length=16, default="pending")
+    request_hash = models.CharField(max_length=64, blank=True)
+    processing_at = models.DateTimeField(null=True)
+    completed_at = models.DateTimeField(null=True)
+    result_credential_id = models.UUIDField(null=True)
 
 
 class RuntimeState(models.Model):

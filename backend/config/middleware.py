@@ -23,6 +23,17 @@ def axes_lockout(request, response=None, credentials=None, *args, **kwargs):
     return result
 
 
+class CredentialSessionMiddleware:
+    """Reject revoked credentials on every request, including protected files."""
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        from runtime.auth_sessions import validate_session
+        validate_session(request)
+        return self.get_response(request)
+
+
 class ResponsePolicyMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response

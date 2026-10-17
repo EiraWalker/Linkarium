@@ -73,12 +73,41 @@ export interface Session {
   password_login_enabled?: boolean;
   passkey_configured?: boolean;
   file_key_configured?: boolean;
+  passkey_origin?: string | null;
+  passkey_available?: boolean;
+  auth_expires_at?: string | null;
+  credential_id?: string | null;
   authenticated: boolean;
   csrf_token: string;
   initialization_required?: boolean;
   active_generation?: string;
   library_epoch?: number;
   maintenance_mode?: boolean;
+}
+export interface PasskeyRecord {
+  id: string;
+  name: string;
+  rp_id: string;
+  created_at: string;
+  last_used_at: string | null;
+  is_current: boolean;
+  can_delete: boolean;
+}
+export interface PasskeyInventory {
+  can_add: boolean;
+  items: PasskeyRecord[];
+}
+export interface EnrollmentGrant {
+  enrollment_url: string;
+  authorization_code: string;
+  expires_at: string;
+}
+export interface PasskeyRegistrationResult {
+  registered: boolean;
+  authenticated: boolean;
+  credential_id: string;
+  already_completed: boolean;
+  registration_mode: "local" | "bootstrap" | "first_passkey" | "add_device" | "reset";
 }
 export interface Profile extends Entity {
   name: string;

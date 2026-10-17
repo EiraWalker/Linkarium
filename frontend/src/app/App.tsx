@@ -24,11 +24,12 @@ import { Transfers } from "../features/transfers/Transfers";
 import { PreviewSession, usePreviewDocuments } from "../features/previews/Preview";
 import s from "./App.module.css";
 import { Login } from "../features/auth/Login";
+import { clearEnrollmentIntent, consumeEnrollmentIntent } from "../features/auth/passkeyClient";
 
 export function App() {
   const route = useRoute();
   const [session, setSession] = useState<Session | null>(null);
-  const [enrollingPasskey, setEnrollingPasskey] = useState(() => new URLSearchParams(location.hash.slice(1)).has("passkey-setup"));
+  const [enrollingPasskey, setEnrollingPasskey] = useState(consumeEnrollmentIntent);
   const [startupError, setStartupError] = useState("");
   const [refresh, setRefresh] = useState(0);
   const [toast, setToast] = useState("");
@@ -42,6 +43,14 @@ export function App() {
   const notified = useRef(new Set<string>());
   const observedTasks = useRef<{ library: string; signature: string } | null>(null);
   const [maintenance, setMaintenance] = useState(false);
+  useEffect(() => {
+    const receiveEnrollment = () => {
+      const intent = consumeEnrollmentIntent();
+      if (intent) setEnrollingPasskey(intent);
+    };
+    window.addEventListener("hashchange", receiveEnrollment);
+    return () => window.removeEventListener("hashchange", receiveEnrollment);
+  }, []);
   async function sessionLoad() {
     setStartupError("");
     try {
@@ -77,7 +86,7 @@ export function App() {
       window.removeEventListener("service-maintenance", maintain);
     };
   }, []);
-  const authorized = session?.authenticated ?? false;
+  const authorized = (session?.authenticated ?? false) && !enrollingPasskey;
   useEffect(() => {
     if (!maintenance) return;
     const timer = setInterval(() => {
@@ -239,16 +248,23 @@ export function App() {
   if (!authorized || enrollingPasskey)
     return (
         <Login
+          key={enrollingPasskey && enrollingPasskey.kind !== "obsolete" ? enrollingPasskey.token : "login"}
           initializationRequired={session.initialization_required ?? false}
           passwordEnabled={session.password_login_enabled ?? false}
           maintenanceMode={maintenance}
-        onLogin={async () => {
+          enrollmentIntent={enrollingPasskey}
+          passkeyOrigin={session.passkey_origin}
+          passkeyAvailable={session.passkey_available}
+          passkeyConfigured={session.passkey_configured}
+        onLogin={async (notice) => {
+          clearEnrollmentIntent();
           if (enrollingPasskey) {
-            setEnrollingPasskey(false);
+            setEnrollingPasskey(null);
             route.navigate("/library", true);
           }
           await sessionLoad();
           changed();
+          if (notice) notify(notice);
         }}
       />
     );

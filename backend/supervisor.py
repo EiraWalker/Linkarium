@@ -12,40 +12,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-
-
-class InstanceLock:
-    def __init__(self, path):
-        self.path, self.file = Path(path), None
-
-    def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.file = self.path.open("a+b")
-        self.file.seek(0)
-        self.file.write(b"0")
-        self.file.flush()
-        self.file.seek(0)
-        try:
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(self.file.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            self.file.close()
-            raise RuntimeError("A supervisor already owns this data directory") from None
-        return self
-
-    def __exit__(self, *args):
-        if os.name == "nt":
-            import msvcrt
-            self.file.seek(0)
-            msvcrt.locking(self.file.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
-        self.file.close()
+from runtime.instance_lock import InstanceLock
 
 
 class Supervisor:
@@ -210,6 +177,10 @@ class Supervisor:
             RuntimeState.objects.using("default").filter(pk=1).update(maintenance_mode=False, active_maintenance_id=None)
 
     def run(self):
+        from django.conf import settings
+        from django.contrib.auth import get_user_model
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
         from runtime.models import RuntimeState, MaintenanceOperation
         from runtime.maintenance import process_operation
         from runtime.performance import span, trace
@@ -226,10 +197,22 @@ class Supervisor:
                 with span("service.readiness_wait"):
                     if not self.ready_services():
                         raise RuntimeError("Application did not become ready")
-            display_host = "127.0.0.1" if self.host in ("0.0.0.0", "::") else self.host
-            if ":" in display_host:
-                display_host = f"[{display_host}]"
-            print(f"网站收藏已启动：http://{display_host}:{self.port}/", flush=True)
+            origin = settings.BOOKMARK_PASSKEY_ORIGIN or f"http://localhost:{self.port}"
+            print(f"网站收藏已启动：{origin}/", flush=True)
+            from runtime.auth_grants import passkey_exists, pending_initialization_exists
+            from runtime.authentication import normalize_origin
+            if not passkey_exists(normalize_origin(origin)[1]):
+                try:
+                    if pending_initialization_exists(origin):
+                        print("已有未使用的首次 Passkey 授权码，重启后仍有效。遗失时运行 passkey_initialize 重新生成。", flush=True)
+                    else:
+                        call_command("passkey_initialize", origin=origin)
+                    sys.stdout.flush()
+                except CommandError:
+                    # A valid initialization may finish between readiness and
+                    # announcement. It must not stop the newly initialized app.
+                    if not passkey_exists(normalize_origin(origin)[1]):
+                        raise
             while self.running:
                 operation = MaintenanceOperation.objects.using("default").filter(
                     state__in=["queued", "validating"]).order_by("created_at").first()
@@ -280,17 +263,33 @@ def main():
     os.environ["BOOKMARK_AUTH_DEBUG"] = "1" if options.debug else "0"
     if options.data_root:
         os.environ["BOOKMARK_DATA_ROOT"] = options.data_root
+    # A configured canonical origin may depend on a fixed proxy upstream. Never
+    # silently move that deployment when its requested port is occupied.
+    choose_port = options.auto_port and not os.environ.get("BOOKMARK_PASSKEY_ORIGIN")
+    selected_port = available_port(options.host, options.port) if choose_port else options.port
+    if not os.environ.get("BOOKMARK_PASSKEY_ORIGIN"):
+        if os.environ.get("BOOKMARK_HTTPS") == "1":
+            raise RuntimeError("Set BOOKMARK_PASSKEY_ORIGIN to the canonical HTTPS address for an HTTPS deployment.")
+        if options.host not in {"localhost", "127.0.0.1", "::1", "0.0.0.0", "::"}:
+            raise RuntimeError("Set BOOKMARK_PASSKEY_ORIGIN to the canonical HTTPS address before binding a network address.")
+        os.environ["BOOKMARK_PASSKEY_ORIGIN"] = f"http://localhost:{selected_port}"
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
     import django
     django.setup()
+    from runtime.authentication import normalize_origin
+    try:
+        normalize_origin(os.environ["BOOKMARK_PASSKEY_ORIGIN"])
+    except (ValueError, TypeError):
+        raise RuntimeError("BOOKMARK_PASSKEY_ORIGIN must be an HTTPS domain origin, or http://localhost:<port> for local development.") from None
     from config.paths import DATA_ROOT
-    selected_port = available_port(options.host, options.port) if options.auto_port else options.port
     if selected_port != options.port:
         print(f"端口 {options.port} 已被其他服务占用，改用 {selected_port}。", flush=True)
     owner = Supervisor(options.host, selected_port)
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: setattr(owner, "running", False))
     with InstanceLock(DATA_ROOT / "runtime" / "supervisor.lock"):
+        from runtime.bootstrap import prepare_databases
+        prepare_databases(automatic=True)
         owner.run()
 
 

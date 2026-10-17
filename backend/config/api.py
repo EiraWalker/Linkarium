@@ -329,10 +329,14 @@ def route_request(request, route):
                   "initialization_required": not get_user_model().objects.filter(username=settings.BOOKMARK_OWNER).exists(),
                   "auth_mode": auth_mode(), "password_login_enabled": settings.BOOKMARK_AUTH_DEBUG}
         from runtime.models import PasskeyCredential, FileKeyCredential
+        from runtime.authentication import passkey_availability
+        from runtime.auth_sessions import session_details
         from urllib.parse import urlsplit
+        result.update(passkey_availability(request))
         result["passkey_configured"] = PasskeyCredential.objects.filter(user__username=settings.BOOKMARK_OWNER,
-            rp_id=urlsplit(f"{request.scheme}://{request.get_host()}").hostname).exists()
+            rp_id=urlsplit(result["passkey_origin"] or f"{request.scheme}://{request.get_host()}").hostname).exists()
         result["file_key_configured"] = FileKeyCredential.objects.filter(user__username=settings.BOOKMARK_OWNER).exists()
+        result.update(session_details(request))
         result["maintenance_mode"] = queue.runtime_state().maintenance_mode
         if owner:
             state = queue.runtime_state()
@@ -350,8 +354,13 @@ def route_request(request, route):
         if not user:
             raise ApiError("LOGIN_FAILED", "密码不正确", 401)
         login(request, user)
-        request.session["auth_mode"] = "debug_password"
+        from runtime.auth_sessions import establish_debug_session
+        establish_debug_session(request)
         return ok({"authenticated": True})
+    if route == "session/passkey/grants":
+        require_method(request, "POST")
+        from runtime.authentication import issue_device_grant
+        return ok(issue_device_grant(request), 201)
     if route.startswith("session/passkey/"):
         require_method(request, "POST")
         from runtime.authentication import passkey_request
@@ -383,6 +392,12 @@ def route_request(request, route):
         require_method(request, "GET")
         from runtime.authentication import passkey_inventory
         return ok(passkey_inventory(request))
+    if len(parts) == 3 and parts[:2] == ["session", "passkeys"]:
+        require_method(request, "PATCH", "DELETE")
+        from runtime.authentication import rename_passkey, delete_passkey
+        if request.method == "PATCH":
+            return ok(rename_passkey(request, parts[2], payload(request)))
+        return ok(delete_passkey(request, parts[2]))
     if route == "runtime/status":
         require_method(request, "GET")
         return ok(runtime_status())

@@ -1,3 +1,4 @@
+from runtime.testing import force_credential_login
 """Load-path invariants: bounded task materialization and exact folder totals."""
 from datetime import timedelta
 from unittest.mock import patch
@@ -19,7 +20,7 @@ class LoadingPerformanceTests(TestCase):
         RuntimeState.objects.create(pk=1)
         LibrarySettings.objects.create(pk=1)
         owner = get_user_model().objects.create_user('owner')
-        self.client.force_login(owner)
+        force_credential_login(self.client, owner)
 
     def test_folder_totals_include_descendants_without_repeated_subtree_scans(self):
         root = catalog.create_folder({'name':'开发'})

@@ -1,3 +1,4 @@
+from runtime.testing import force_credential_login
 import hashlib
 import base64
 import os
@@ -46,7 +47,7 @@ class PreviewCacheTests(TestCase):
         RuntimeState.objects.create(pk=1)
         LibrarySettings.objects.create(pk=1)
         user = get_user_model().objects.create_user("owner", password="test")
-        self.client.force_login(user)
+        force_credential_login(self.client, user)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)

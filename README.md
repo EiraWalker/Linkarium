@@ -23,7 +23,7 @@
 - **HTML 页面快照**：分别保存桌面与手机版本，保留历史，支持定时刷新和文件夹批量刷新。
 - **AI 分类校对**：连接兼容 Chat Completions 的服务生成建议，经人工确认后创建目录并移动网站。
 - **导入与备份**：导入 Chrome / Firefox 书签 HTML；整库备份包含页面快照与历史，支持校验和覆盖恢复。
-- **密钥登录**：支持 Passkey 与 Ed25519 私钥文件；单用户访问自己的收藏库。
+- **Passkey 登录**：网页首次配置、多把凭据管理、二维码或链接添加新设备；Ed25519 私钥文件作为可选方式。
 
 技术栈为 Preact + TypeScript + Vite、Django + SQLite。前端构建后无需常驻 Node 服务，也无需 Redis 或独立数据库；Chromium 与 Monolith 按采集任务启动。
 
@@ -32,17 +32,15 @@
 Windows PowerShell，需要 [uv](https://docs.astral.sh/uv/) 与 Node.js 24。在克隆后的项目根目录执行，uv 会准备 Python 3.13：
 
 ```powershell
-uv sync --frozen --python 3.13
-.\.venv\Scripts\python.exe backend\manage.py file_key_setup --generate '..\website-login-key.pem'
-.\scripts\setup.ps1 -PrivateKey '..\website-login-key.pem'
+.\scripts\setup.ps1
 .\scripts\start.ps1 -DevelopmentCapture
 ```
 
-私钥保存在项目外，生成命令不会覆盖同名文件。首次登录选择这个 PEM 文件，之后可在设置中添加 Passkey；已有 Ed25519 PKCS8 PEM 私钥也可直接传给 `setup.ps1 -PrivateKey`。密钥应由使用者妥善保管。
+首次启动后，打开终端显示的 `http://localhost:端口`，输入终端初始化码，创建自己的 Passkey。初始化码成功使用前不过期，重启仍有效，手动重新生成会替换旧码；首次配置无需预先准备私钥。已有 Ed25519 PKCS8 PEM 私钥也可传给 `setup.ps1 -PrivateKey`，保留文件密钥登录方式。
 
-安装脚本会安装锁定依赖和采集工具、构建前端并初始化用户。后续只需运行启动命令；访问终端显示的实际地址，默认从 8000 寻找空闲端口，`-Port 8001` 可固定端口。
+安装脚本会安装锁定依赖和采集工具、构建前端并准备数据库；首个 Passkey 注册成功后才建立所有者。后续只需运行启动命令，默认从 8000 寻找空闲端口，`-Port 8001` 可固定端口。本机 Passkey 入口使用 `localhost`；跨网络的电脑和手机统一使用配置的 HTTPS 地址。
 
-正常模式仅接受密钥登录。需要密码调试时，安装和启动脚本均加 `-DebugAuth`，密码由终端交互设置，至少六位。Passkey 来源配置、跨设备使用与凭据管理见[登录配置](docs/authentication.md)。
+登录保持十四天。新设备可从已登录设备取得五分钟有效的链接／二维码与独立授权码；全部登录方式丢失时，由服务器终端签发重置入口。需要密码调试时，安装和启动脚本均加 `-DebugAuth`，密码由终端交互设置，至少六位。首次码重发、可选私钥、来源配置与凭据管理见[登录配置](docs/authentication.md)。
 
 ## 运行与部署
 

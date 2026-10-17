@@ -1,6 +1,5 @@
 param([switch]$SkipCapture, [switch]$DebugAuth, [string]$PrivateKey)
 $ErrorActionPreference = 'Stop'
-if (-not $DebugAuth -and -not $PrivateKey) { throw 'Normal setup requires -PrivateKey <existing Ed25519 PKCS8 PEM file>' }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 uv sync --frozen --python 3.13
@@ -19,4 +18,4 @@ $initializeArguments = @((Join-Path $projectRoot 'backend\manage.py'), 'initiali
 if ($DebugAuth) { $initializeArguments += '--debug' }
 if ($PrivateKey) { $initializeArguments += @('--private-key', $PrivateKey) }
 & (Join-Path $projectRoot '.venv\Scripts\python.exe') @initializeArguments
-if ($LASTEXITCODE -ne 0) { throw 'Owner initialization failed' }
+if ($LASTEXITCODE -ne 0) { throw 'Offline database preparation failed' }

@@ -14,6 +14,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "config.middleware.CredentialSessionMiddleware",
     "axes.middleware.AxesMiddleware",
     "config.middleware.ResponsePolicyMiddleware",
 ]
@@ -45,7 +46,9 @@ AXES_ENABLE_ACCESS_FAILURE_LOG = False
 AXES_CLIENT_IP_CALLABLE = "config.middleware.client_ip"
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
-SESSION_COOKIE_AGE = 604800
+SESSION_COOKIE_AGE = 14 * 24 * 60 * 60
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False
+SESSION_SAVE_EVERY_REQUEST = False
 CSRF_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SAMESITE = "Lax"
 SECURE_MODE = os.environ.get("BOOKMARK_HTTPS", "0") == "1"

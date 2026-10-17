@@ -11,7 +11,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Django system check failed' }
     & $pythonPath -X utf8 backend/manage.py makemigrations --check --dry-run
     if ($LASTEXITCODE -ne 0) { throw 'Database migration drift detected' }
-    & $pythonPath -X utf8 backend/manage.py test library.tests tests.portability --verbosity 1
+    & $pythonPath -X utf8 backend/manage.py test library runtime tests.portability --verbosity 1
     if ($LASTEXITCODE -ne 0) { throw 'Backend tests failed' }
     if (-not $SkipCapture) {
         $env:RUN_CAPTURE_INTEGRATION = '1'

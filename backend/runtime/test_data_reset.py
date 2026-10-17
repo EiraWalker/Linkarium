@@ -1,3 +1,4 @@
+from runtime.testing import force_credential_login
 import json
 import sqlite3
 import tempfile
@@ -25,7 +26,7 @@ class DataOperationApiTests(TestCase):
         RuntimeState.objects.create(pk=1)
         LibrarySettings.objects.create(pk=1)
         self.owner = get_user_model().objects.create_user("owner", password="test-password")
-        self.client.force_login(self.owner)
+        force_credential_login(self.client, self.owner)
 
     def post(self, kind, **fields):
         return self.client.post(f"/api/v1/data/{kind}", json.dumps({"library_epoch": 1, **fields}),
@@ -39,7 +40,7 @@ class DataOperationApiTests(TestCase):
 
     def test_csrf_is_required_even_with_a_valid_owner_session(self):
         csrf = Client(enforce_csrf_checks=True)
-        csrf.force_login(self.owner)
+        force_credential_login(csrf, self.owner)
         response = csrf.post("/api/v1/data/reset", json.dumps({"confirmation": "重置数据", "library_epoch": 1}),
             content_type="application/json", HTTP_IDEMPOTENCY_KEY="csrf-reset")
         self.assertEqual(response.status_code, 403)
@@ -79,7 +80,7 @@ class DataErasureTests(TransactionTestCase):
         Artifact.objects.create(sha256="a" * 64, relative_path="artifacts/aa/" + "a" * 64 + ".html", byte_size=7)
         self.profile = profile
         self.owner = get_user_model().objects.create_user("owner", password="test-password")
-        self.client.force_login(self.owner)
+        force_credential_login(self.client, self.owner)
         ProviderSecret.objects.create(profile_id=profile.id, api_key="private-test-api-key", bound_endpoint=profile.base_url,
             endpoint_fingerprint="test-fingerprint", verified=True, verified_library_epoch=1)
         self.temp = tempfile.TemporaryDirectory()
@@ -141,12 +142,22 @@ class DataErasureTests(TransactionTestCase):
         self.assertFalse(RuntimeState.objects.get(pk=1).maintenance_mode)
 
     def test_reset_also_erases_all_users_sessions_secrets_and_preferences(self):
+        from runtime.auth_grants import get_auth_state, issue_console_grant
+        from runtime.models import AuthState, EnrollmentGrant, FileKeyCredential, PasskeyChallenge
+        auth_before = get_auth_state()
+        issue_console_grant("reset", "http://localhost:8000")
         result, operation = self.run_operation("reset")
         self.assertTrue(result)
         self.assert_website_data_erased(operation)
         self.assertFalse(get_user_model().objects.exists())
         self.assertFalse(Session.objects.exists())
         self.assertFalse(ProviderSecret.objects.exists())
+        self.assertFalse(FileKeyCredential.objects.exists())
+        self.assertFalse(EnrollmentGrant.objects.exists())
+        self.assertFalse(PasskeyChallenge.objects.exists())
+        auth_after = AuthState.objects.get(pk=1)
+        self.assertGreater(auth_after.credential_epoch, auth_before.credential_epoch)
+        self.assertNotEqual(bytes(auth_after.webauthn_user_handle), bytes(auth_before.webauthn_user_handle))
         with closing(self.candidate(operation)) as database:
             self.assertEqual(database.execute("SELECT count(*) FROM library_aiprofile").fetchone()[0], 0)
             self.assertEqual(database.execute("SELECT default_refresh_seconds,ui_defaults,active_ai_profile_id FROM library_librarysettings").fetchone(), (604800, "{}", None))
