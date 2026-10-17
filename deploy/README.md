@@ -17,6 +17,8 @@
 
 `-DevelopmentCapture` 明确启用本机开发采集：Chromium 直接在当前机器执行网站脚本，没有生产 launcher 的 namespace/cgroup/内核出网隔离，不作为公网部署安全验收。省略该参数则默认 isolated，缺少宿主 Linux capture launcher 时抓取明确失败，收藏整理、导入、AI、备份仍可运行。完整隔离部署使用 Linux 或 WSL2 Linux 环境，安装和验证步骤见 `deploy/capture/` 文档。
 
+Windows 的标准启动入口另支持 `-LanHttps` 和可选 `-NetworkAdapter`，详情见[局域网访问与本地 HTTPS](../docs/network-access.md)。该模式由同一 supervisor 管理 loopback Web、单 worker、HTTPS 代理和公开 CA 安装页，证书资料持久保存在数据目录的运行区。部署入口 `start-windows.ps1` 支持相同选项；`-SkipBuild` 时先单独准备 HTTPS 运行依赖。
+
 ## Linux / Docker Compose
 
 1. 按 `deploy/capture/` 安装并验证宿主 launcher；确认 `/run/bookmark-capture/launcher.sock` 和 `/var/lib/bookmark-capture/spool` 已存在。应用 UID/GID 为 `10001`，launcher 专用 socket 组通过 `BOOKMARK_CAPTURE_GID` 配置，spool 必须授权该应用 UID 写入每次任务目录。

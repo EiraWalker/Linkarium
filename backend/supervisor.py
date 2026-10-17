@@ -16,35 +16,42 @@ from runtime.instance_lock import InstanceLock
 
 
 class Supervisor:
-    def __init__(self, host="127.0.0.1", port=8000):
+    def __init__(self, host="127.0.0.1", port=8000, https=None):
         self.host, self.port = host, port
+        self.https = https
         self.children = {}
         self.running = True
 
     def start_services(self):
+        from runtime.network_access import web_addresses
         manage = str(Path(__file__).with_name("manage.py"))
         web = self.children.get("web")
         if web is None or web.poll() is not None:
             # Fail before spawning anything if this endpoint belongs to another app.
-            family = socket.AF_INET6 if ":" in self.host else socket.AF_INET
-            with socket.socket(family, socket.SOCK_STREAM) as probe:
-                if os.name == "nt":
-                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-                try:
-                    probe.bind((self.host, self.port))
-                except OSError:
-                    raise RuntimeError("The configured Web port is already in use") from None
+            for address in web_addresses(self.host):
+                family = socket.AF_INET6 if ":" in address else socket.AF_INET
+                with socket.socket(family, socket.SOCK_STREAM) as probe:
+                    if os.name == "nt":
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                    try:
+                        probe.bind((address, self.port))
+                    except OSError:
+                        raise RuntimeError("The configured Web address/port is already in use") from None
         commands = {"web": [sys.executable, manage, "run_web", "--host", self.host, "--port", str(self.port)],
                     "worker": [sys.executable, manage, "run_worker"]}
         if os.environ.get("BOOKMARK_AUTH_DEBUG") == "1":
             for command in commands.values():
                 command.append("--debug")
+        if self.https:
+            commands["proxy"] = self.https.command()
         for name, command in commands.items():
             current = self.children.get(name)
             if current and current.poll() is None:
                 continue
             options = {"start_new_session": True} if os.name != "nt" else {
                 "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+            if name == "proxy":
+                options["env"] = self.https.process_environment()
             self.children[name] = subprocess.Popen(command, stdin=subprocess.DEVNULL, **options)
 
     @staticmethod
@@ -125,7 +132,8 @@ class Supervisor:
                     body = json.loads(response.read(4096))
                     if response.status == 200 and isinstance(body, dict) and body.get("ready") is True and (
                             self.children and all(child.poll() is None for child in self.children.values())):
-                        return True
+                        if self.https is None or self.https.ready():
+                            return True
             except (OSError, ValueError):
                 pass
             time.sleep(0.5)
@@ -184,6 +192,8 @@ class Supervisor:
         from runtime.models import RuntimeState, MaintenanceOperation
         from runtime.maintenance import process_operation
         from runtime.performance import span, trace
+        from config.paths import DATA_ROOT
+        from runtime.network_access import record_connection, clear_connection
         try:
             # Recovery can also start children; every startup path belongs to the
             # same cleanup boundary as the steady-state loop.
@@ -196,9 +206,19 @@ class Supervisor:
                     self.start_services()
                 with span("service.readiness_wait"):
                     if not self.ready_services():
+                        if self.https:
+                            raise RuntimeError(f"HTTPS 入口未就绪：{self.https.origin}。请检查域名 DNS／代理是否能到达 {self.https.adapter.ipv4}、所选端口及 CA 证书；未降级 HTTP。")
                         raise RuntimeError("Application did not become ready")
+            record_connection(DATA_ROOT)
             origin = settings.BOOKMARK_PASSKEY_ORIGIN or f"http://localhost:{self.port}"
             print(f"网站收藏已启动：{origin}/", flush=True)
+            from runtime.network_access import connection_status
+            connection = connection_status()
+            if connection:
+                print(f"访问地址：{connection['access_url']}（{connection['adapter']}）", flush=True)
+            if self.https:
+                print(f"CA 证书：{self.https.ca_path.resolve()}", flush=True)
+                print(f"证书安装页：{self.https.certificate_url}", flush=True)
             from runtime.auth_grants import passkey_exists, pending_initialization_exists
             from runtime.authentication import normalize_origin
             if not passkey_exists(normalize_origin(origin)[1]):
@@ -233,22 +253,24 @@ class Supervisor:
                     for child in list(self.children.values()):
                         self._stop_child(child)
                     self.children.clear()
+                    clear_connection(DATA_ROOT)
 
 
-def available_port(host, starting_port, attempts=20):
+def available_port(host, starting_port, attempts=20, addresses=None):
     """Choose a free default port without connecting to or stopping another app."""
     if not 1 <= starting_port <= 65535:
         raise ValueError("Port must be between 1 and 65535")
-    family = socket.AF_INET6 if ":" in host else socket.AF_INET
     for port in range(starting_port, min(65536, starting_port + attempts)):
-        with socket.socket(family, socket.SOCK_STREAM) as probe:
-            if os.name == "nt":
-                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-            try:
-                probe.bind((host, port))
-            except OSError:
-                continue
-            return port
+        try:
+            for address in addresses or [host]:
+                family = socket.AF_INET6 if ":" in address else socket.AF_INET
+                with socket.socket(family, socket.SOCK_STREAM) as probe:
+                    if os.name == "nt":
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                    probe.bind((address, port))
+        except OSError:
+            continue
+        return port
     raise RuntimeError(f"No available Web port starting at {starting_port}")
 
 
@@ -258,6 +280,13 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--auto-port", action="store_true", help="Choose an available default port; explicit deployments keep a fixed port")
+    parser.add_argument("--network-auto", action="store_true", help="Publish access on physical Wi-Fi, falling back to Ethernet (Windows)")
+    parser.add_argument("--network-adapter", help="Network adapter name or index; overrides automatic selection")
+    parser.add_argument("--lan-https", action="store_true", help="Serve a persistent local HTTPS identity and public CA installation page")
+    parser.add_argument("--https-port", type=int, help="LAN HTTPS port; defaults to the saved port or 8443")
+    parser.add_argument("--certificate-port", type=int, help="HTTP CA installation port; defaults to the saved port or 8081")
+    parser.add_argument("--lan-domain", help="HTTPS domain; defaults to the saved domain or an sslip.io hostname")
+    parser.add_argument("--lan-import", help="Adopt an existing local HTTPS configuration directory without replacing its CA")
     parser.add_argument("--debug", action="store_true", help="Allow debug password login alongside public keys")
     options = parser.parse_args()
     os.environ["BOOKMARK_AUTH_DEBUG"] = "1" if options.debug else "0"
@@ -265,8 +294,36 @@ def main():
         os.environ["BOOKMARK_DATA_ROOT"] = options.data_root
     # A configured canonical origin may depend on a fixed proxy upstream. Never
     # silently move that deployment when its requested port is occupied.
+    from runtime.network_access import select_adapter, configure_http, configure_external_https
+    adapter = select_adapter(options.network_adapter) if options.network_auto or options.network_adapter or options.lan_https else None
+    https = None
+    canonical = os.environ.get("BOOKMARK_PASSKEY_ORIGIN", "")
+    if options.lan_https:
+        from config.paths import DATA_ROOT
+        from runtime.lan_https import LanHttps
+        from urllib.parse import urlsplit
+        if canonical and not canonical.startswith("https://"):
+            raise RuntimeError("局域网 HTTPS 与非 HTTPS 的 BOOKMARK_PASSKEY_ORIGIN 不兼容。")
+        parsed = urlsplit(canonical)
+        https = LanHttps(DATA_ROOT, adapter, domain=options.lan_domain or parsed.hostname,
+            https_port=options.https_port if options.https_port is not None else (parsed.port or 443 if canonical else None),
+            certificate_port=options.certificate_port, import_from=options.lan_import)
+        if canonical and canonical.rstrip("/") != https.origin:
+            raise RuntimeError("局域网 HTTPS 来源与 BOOKMARK_PASSKEY_ORIGIN 不一致。")
+        options.host = "127.0.0.1"
+    elif any(value is not None for value in (options.https_port, options.certificate_port, options.lan_domain, options.lan_import)):
+        parser.error("HTTPS configuration options require --lan-https")
+    addresses = ["127.0.0.1", adapter.ipv4] if adapter and not (https or canonical.startswith("https://")) else [options.host]
     choose_port = options.auto_port and not os.environ.get("BOOKMARK_PASSKEY_ORIGIN")
-    selected_port = available_port(options.host, options.port) if choose_port else options.port
+    selected_port = available_port(options.host, options.port, addresses=addresses) if choose_port else options.port
+    if https:
+        if selected_port in (https.https_port, https.certificate_port):
+            raise RuntimeError("Web 上游、HTTPS 和证书安装页必须使用不同端口。")
+        https.configure(selected_port)
+    elif adapter and canonical.startswith("https://"):
+        configure_external_https(adapter, canonical, options.host)
+    elif adapter:
+        configure_http(adapter, selected_port)
     if not os.environ.get("BOOKMARK_PASSKEY_ORIGIN"):
         if os.environ.get("BOOKMARK_HTTPS") == "1":
             raise RuntimeError("Set BOOKMARK_PASSKEY_ORIGIN to the canonical HTTPS address for an HTTPS deployment.")
@@ -284,12 +341,14 @@ def main():
     from config.paths import DATA_ROOT
     if selected_port != options.port:
         print(f"端口 {options.port} 已被其他服务占用，改用 {selected_port}。", flush=True)
-    owner = Supervisor(options.host, selected_port)
+    owner = Supervisor(options.host, selected_port, https=https)
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: setattr(owner, "running", False))
     with InstanceLock(DATA_ROOT / "runtime" / "supervisor.lock"):
         from runtime.bootstrap import prepare_databases
         prepare_databases(automatic=True)
+        if https:
+            https.prepare()
         owner.run()
 
 

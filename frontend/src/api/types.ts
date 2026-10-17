@@ -102,6 +102,17 @@ export interface EnrollmentGrant {
   authorization_code: string;
   expires_at: string;
 }
+export interface NetworkConnection {
+  mode: "http" | "lan_https" | "https";
+  adapter: string;
+  ipv4: string;
+  access_url: string;
+  certificate_url: string | null;
+  device_enrollment: boolean;
+}
+export interface RuntimeStatus extends Record<string, unknown> {
+  connection?: NetworkConnection | null;
+}
 export interface PasskeyRegistrationResult {
   registered: boolean;
   authenticated: boolean;

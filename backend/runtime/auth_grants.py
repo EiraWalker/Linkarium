@@ -118,6 +118,10 @@ def issue_console_grant(purpose, origin, name="Passkey"):
 def issue_device_grant(request):
     from .authentication import request_origin
     from .auth_sessions import require_credential_session
+    from .network_access import connection_status
+    connection = connection_status()
+    if connection is not None and not connection["device_enrollment"]:
+        raise ApiError("DEVICE_HTTPS_REQUIRED", "启用 HTTPS 后可添加其他设备", 403)
     origin, rp_id = request_origin(request)
     with transaction.atomic(using="default"):
         kind, credential_id, _ = require_credential_session(request)

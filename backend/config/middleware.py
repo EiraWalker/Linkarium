@@ -1,5 +1,5 @@
 import uuid
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponseRedirect
 
 
 def client_ip(request):
@@ -31,6 +31,22 @@ class CredentialSessionMiddleware:
     def __call__(self, request):
         from runtime.auth_sessions import validate_session
         validate_session(request)
+        return self.get_response(request)
+
+
+class CanonicalAccessMiddleware:
+    """Send document navigation from the private upstream to its HTTPS identity."""
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        from runtime.network_access import connection_status
+        connection = connection_status()
+        if (connection and connection["mode"] == "lan_https" and not request.is_secure()
+                and request.method in {"GET", "HEAD"}
+                and request.path in {"/", "/login", "/settings", "/library", "/classification", "/transfers"}):
+            request.get_host()  # Validate Host; the redirect destination is server-owned.
+            return HttpResponseRedirect(connection["access_url"].rstrip("/") + request.get_full_path())
         return self.get_response(request)
 
 

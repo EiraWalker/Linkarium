@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { errorMessage, request } from "../../api/client";
-import type { CaptureNetworkSettings, Job, Profile } from "../../api/types";
+import type { CaptureNetworkSettings, Job, Profile, RuntimeStatus } from "../../api/types";
 import { useApp } from "../../app/context";
 import { useResource } from "../../app/hooks";
 import {
@@ -20,7 +20,7 @@ import { PasskeySettings } from "./Passkeys";
 export function SettingsPage() {
   const app = useApp();
   const profiles = useResource<Profile[]>("/ai-profiles", app.refresh);
-  const runtime = useResource<Record<string, unknown>>(
+  const runtime = useResource<RuntimeStatus>(
     "/runtime/status",
     app.refresh,
   );
@@ -63,7 +63,7 @@ export function SettingsPage() {
     <main class={s.page}>
       <h1>设置</h1>
       <p class="muted">设置保存在服务端，你的电脑和手机共享同一个收藏库。</p>
-      <PasskeySettings />
+      <PasskeySettings connection={runtime.data?.connection} connectionReady={!!runtime.data} />
       <section class={s.section}>
         <h2>
           <Icon name="clock" />

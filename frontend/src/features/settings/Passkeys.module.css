@@ -19,6 +19,10 @@
 .grantFields input { width: 100%; min-width: 0; }
 .authorizationCode { font-family: ui-monospace, monospace; letter-spacing: .12em; }
 .lastCredential { margin-top: 8px; color: var(--muted); }
+.connection { display: grid; gap: 8px; margin: 0 0 16px; font-size: 13px; }
+.connection > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 12px; }
+.connection dt { color: var(--muted); }
+.connection dd { margin: 0; overflow-wrap: anywhere; }
 @media (max-width: 600px) {
   .row { flex-direction: column; gap: 12px; }
   .grant { grid-template-columns: minmax(0, 1fr); gap: 16px; }

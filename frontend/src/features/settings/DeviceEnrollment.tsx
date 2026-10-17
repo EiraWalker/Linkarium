@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import QRCode from "qrcode";
 import { request } from "../../api/client";
-import type { EnrollmentGrant } from "../../api/types";
+import type { EnrollmentGrant, NetworkConnection } from "../../api/types";
 import { Button, ErrorNotice, Field } from "../../components/UI";
 import { passkeyError } from "../auth/passkeyClient";
 import s from "./Passkeys.module.css";
 
-export function DeviceEnrollment() {
+export function DeviceEnrollment({ connection, canAuthorize = true }: {
+  connection?: NetworkConnection | null;
+  canAuthorize?: boolean;
+}) {
   const [grant, setGrant] = useState<EnrollmentGrant | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -18,6 +21,9 @@ export function DeviceEnrollment() {
   const inFlight = useRef(false);
   const remaining = grant ? Math.max(0, Math.ceil((Date.parse(grant.expires_at) - now) / 1000)) : 0;
   const active = !!grant && remaining > 0;
+  const accessOnly = connection?.mode === "http";
+  const qrValue = accessOnly ? connection.access_url : active ? grant?.enrollment_url : null;
+  const certificateUrl = connection?.mode === "lan_https" ? connection.certificate_url : null;
 
   useEffect(() => {
     if (!grant) return;
@@ -27,12 +33,12 @@ export function DeviceEnrollment() {
     return () => { clearInterval(timer); document.removeEventListener("visibilitychange", tick); };
   }, [grant]);
   useEffect(() => {
-    if (!active || !canvas.current || !grant) return;
+    if (!qrValue || !canvas.current) return;
     let current = true;
-    void QRCode.toCanvas(canvas.current, grant.enrollment_url, { width: 220, margin: 2, errorCorrectionLevel: "M" })
-      .catch(() => { if (current) setError("二维码生成失败，请复制链接添加设备。"); });
+    void QRCode.toCanvas(canvas.current, qrValue, { width: 220, margin: 2, errorCorrectionLevel: "M" })
+      .catch(() => { if (current) setError("二维码生成失败，请复制链接。"); });
     return () => { current = false; };
-  }, [grant, active]);
+  }, [qrValue]);
 
   async function generate() {
     if (inFlight.current) return;
@@ -55,10 +61,21 @@ export function DeviceEnrollment() {
   }
 
   return <div class={s.deviceEnrollment}>
-    <h3>添加其他设备</h3>
-    <p class="muted">新手机扫码，或在新电脑打开链接，再输入授权码。</p>
+    <h3>{accessOnly ? "网站访问" : "添加其他设备"}</h3>
+    {connection && <dl class={s.connection}>
+      <div><dt>连接方式</dt><dd>{accessOnly ? "HTTP" : "HTTPS"}</dd></div>
+      <div><dt>网络适配器</dt><dd>{connection.adapter} · {connection.ipv4}</dd></div>
+      {!accessOnly && <div><dt>服务器地址</dt><dd>{connection.access_url}</dd></div>}
+    </dl>}
+    <p class="muted">{accessOnly ? "启用 HTTPS 后可添加其他设备的 Passkey。" : "新手机扫码，或在新电脑打开链接，再输入授权码。"}</p>
     <ErrorNotice message={error} />
-    {active && grant && <div class={s.grant}>
+    {accessOnly && connection ? <div class={s.grant}>
+      <canvas ref={canvas} role="img" aria-label="网站访问二维码" class={s.qr} />
+      <div class={s.grantFields}>
+        <Field label="访问链接"><input ref={linkInput} type="text" readOnly value={connection.access_url} /></Field>
+        <Button onClick={() => void copy(connection.access_url, "链接", linkInput.current)}>复制链接</Button>
+      </div>
+    </div> : active && grant && <div class={s.grant}>
       <canvas ref={canvas} role="img" aria-label="新设备添加链接二维码" class={s.qr} />
       <div class={s.grantFields}>
         <Field label="添加链接"><input ref={linkInput} type="text" readOnly value={grant.enrollment_url} /></Field>
@@ -70,6 +87,11 @@ export function DeviceEnrollment() {
     </div>}
     {grant && !active && <p role="status">授权已过期，请生成新的链接和授权码。</p>}
     {copyStatus && <p role="status">{copyStatus}</p>}
-    <Button onClick={() => void generate()} disabled={busy}>{busy ? "正在生成…" : grant ? "生成新的授权" : "生成链接和授权码"}</Button>
+    {!accessOnly && <div class={s.actions}>
+      {canAuthorize && <Button onClick={() => void generate()} disabled={busy}>{busy ? "正在生成…" : grant ? "生成新的授权" : "生成链接和授权码"}</Button>}
+      {certificateUrl && <Button onClick={() => {
+        window.open(certificateUrl, "_blank", "noopener,noreferrer");
+      }}>安装 CA 证书</Button>}
+    </div>}
   </div>;
 }

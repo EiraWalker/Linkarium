@@ -256,9 +256,10 @@ def serialize_profile(profile):
 
 
 def runtime_status():
+    from runtime.network_access import connection_status
     state = queue.runtime_state()
     heartbeat = state.worker_heartbeat
-    return {"active_generation": state.active_generation, "library_epoch": state.library_epoch, "maintenance_mode": state.maintenance_mode, "active_maintenance_id": str(state.active_maintenance_id) if state.active_maintenance_id else None, "worker_alive": bool(heartbeat and heartbeat > timezone.now()-timedelta(seconds=180)), "worker_heartbeat": heartbeat.isoformat() if heartbeat else None, "free_disk_bytes": shutil.disk_usage(DATA_ROOT).free, "capture_mode": settings.BOOKMARK_CAPTURE_MODE, "capture_available": (Path(settings.BOOKMARK_CAPTURE_SOCKET).exists() if settings.BOOKMARK_CAPTURE_MODE != "development" else bool(shutil.which("monolith") or (settings.BASE_DIR / "tools" / "monolith").exists()))}
+    return {"active_generation": state.active_generation, "library_epoch": state.library_epoch, "maintenance_mode": state.maintenance_mode, "active_maintenance_id": str(state.active_maintenance_id) if state.active_maintenance_id else None, "worker_alive": bool(heartbeat and heartbeat > timezone.now()-timedelta(seconds=180)), "worker_heartbeat": heartbeat.isoformat() if heartbeat else None, "free_disk_bytes": shutil.disk_usage(DATA_ROOT).free, "capture_mode": settings.BOOKMARK_CAPTURE_MODE, "connection": connection_status(), "capture_available": (Path(settings.BOOKMARK_CAPTURE_SOCKET).exists() if settings.BOOKMARK_CAPTURE_MODE != "development" else bool(shutil.which("monolith") or (settings.BASE_DIR / "tools" / "monolith").exists()))}
 
 
 def idempotent(request, data, execute, runtime=False):

@@ -46,6 +46,15 @@ Windows PowerShell，需要 [uv](https://docs.astral.sh/uv/) 与 Node.js 24。�
 
 数据默认保存在项目的 `data/` 目录，可通过 `BOOKMARK_DATA_ROOT` 指定独立数据目录。多设备共享同一后端；局域网访问和 HTTPS 配置见[部署说明](deploy/README.md)。备份不含登录凭据、会话和 AI 密钥；恢复保留本机凭据并撤销会话。
 
+Windows 启动默认选择已连接的物理 Wi-Fi，无可用 Wi-Fi 时选择物理以太网；可用 `-NetworkAdapter 'Wi-Fi'` 指定网卡。普通模式在设置页提供 IP＋实际端口的网站访问二维码，本机登录继续用 localhost。手机 Passkey 使用可选局域网 HTTPS：
+
+```powershell
+.\scripts\install-https.ps1
+.\scripts\start.ps1 -DevelopmentCapture -LanHttps
+```
+
+终端会输出 HTTPS 地址、公开 CA 证书绝对路径及证书安装页地址；设置页在生成设备授权的按钮右侧提供“安装 CA 证书”。网卡选择、防火墙、Android 安装及已有 CA 接管见[局域网访问](docs/network-access.md)。
+
 Windows 的 `-DevelopmentCapture` 会在本机执行网页采集。使用 Clash Verge 时，可在“设置 → 网页缓存代理”配置本机代理；fake-IP DNS 环境也可启动时附加 `-PublicDns`。详见[缓存兼容性与代理](docs/capture-proxy.md)。
 
 当前版本可供本机使用。**完整 Linux 采集隔离尚未通过验收，Docker / Nginx / 实体手机测试仍待完成**，公网生产部署需先完成对应验证。网页归档的兼容性以已测样本为准，验证码、受限资源和复杂动态内容可能导致抓取失败或显示差异。实际证据与限制见[实现与验收记录](docs/implementation-status.md)。

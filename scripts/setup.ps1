@@ -1,4 +1,4 @@
-param([switch]$SkipCapture, [switch]$DebugAuth, [string]$PrivateKey)
+param([switch]$SkipCapture, [switch]$DebugAuth, [string]$PrivateKey, [switch]$LanHttps)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
@@ -14,6 +14,7 @@ try {
 if (-not $SkipCapture) {
     & (Join-Path $PSScriptRoot 'install-capture.ps1')
 }
+if ($LanHttps) { & (Join-Path $PSScriptRoot 'install-https.ps1') }
 $initializeArguments = @((Join-Path $projectRoot 'backend\manage.py'), 'initialize')
 if ($DebugAuth) { $initializeArguments += '--debug' }
 if ($PrivateKey) { $initializeArguments += @('--private-key', $PrivateKey) }

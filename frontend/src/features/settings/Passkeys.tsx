@@ -1,6 +1,6 @@
 import { useState } from "preact/hooks";
 import { getSession, request } from "../../api/client";
-import type { PasskeyInventory, PasskeyRecord } from "../../api/types";
+import type { NetworkConnection, PasskeyInventory, PasskeyRecord } from "../../api/types";
 import { useApp } from "../../app/context";
 import { useResource } from "../../app/hooks";
 import { Button, Dialog, ErrorNotice, Field, Icon, Time } from "../../components/UI";
@@ -10,7 +10,10 @@ import { DeviceEnrollment } from "./DeviceEnrollment";
 import s from "./Settings.module.css";
 import p from "./Passkeys.module.css";
 
-export function PasskeySettings() {
+export function PasskeySettings({ connection, connectionReady = true }: {
+  connection?: NetworkConnection | null;
+  connectionReady?: boolean;
+}) {
   const app = useApp();
   const inventory = useResource<PasskeyInventory>("/session/passkeys", app.refresh);
   const [editing, setEditing] = useState<PasskeyRecord | null>(null);
@@ -89,8 +92,9 @@ export function PasskeySettings() {
           await getSession(); inventory.reload(); setRegistrationKey(value => value + 1); app.notify("Passkey 已添加。");
         }} />
       </div>
-      <DeviceEnrollment />
     </> : inventory.data && <p class="muted">使用私钥文件或 Passkey 登录后，可在这里添加 Passkey。</p>}
+    {connectionReady && (connection || inventory.data?.can_add) &&
+      <DeviceEnrollment connection={connection} canAuthorize={inventory.data?.can_add ?? false} />}
     {deleting && <Dialog title="删除 Passkey" onClose={() => { if (!busy) setDeleting(null); }}>
       <p>删除“{deleting.name}”并退出使用它登录的所有会话？</p>
       {deleting.is_current && <p>当前页面也会退出登录。</p>}

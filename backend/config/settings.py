@@ -9,6 +9,7 @@ ALLOWED_HOSTS = os.environ.get("BOOKMARK_ALLOWED_HOSTS", "localhost,127.0.0.1,[:
 INSTALLED_APPS = ["django.contrib.auth", "django.contrib.contenttypes", "django.contrib.sessions", "axes", "runtime", "library"]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "config.middleware.CanonicalAccessMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
