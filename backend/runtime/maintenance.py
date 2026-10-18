@@ -163,17 +163,20 @@ def create_backup(generation_dir, output_path, *, expected_schema=None):
             with performance.span("backup.database_validate", category="maintenance"):
                 artifacts, counts = _validate_database(database, expected_schema=expected_schema or generation_dir / "library.sqlite3")
             needed = database.stat().st_size + sum(size for _, _, size in artifacts)
-            if shutil.disk_usage(output_path.parent).free < needed * 2 + 16 * 1024**2:
+            # Reserve worst-case ZIP bytes now. Validation checks actual remaining
+            # extraction space after compression, without assuming an uncompressed ZIP.
+            if shutil.disk_usage(output_path.parent).free < needed + 16 * 1024**2:
                 raise MaintenanceError("INSUFFICIENT_DISK_SPACE")
             files = {"library.sqlite3": {"size": database.stat().st_size, "sha256": digest(database)}}
-            with performance.span("backup.artifact_copy", category="maintenance"):
+            archive_sources = {"library.sqlite3": database}
+            # Publishers and cleaners remain stopped until the archive is verified.
+            # Read immutable artifacts in place; only SQLite needs its own snapshot.
+            with performance.span("backup.artifact_verify", category="maintenance"):
                 for artifact_hash, name, size in artifacts:
                     source = _safe_file(generation_dir, name)
                     if not source.is_file() or source.stat().st_size != size or digest(source) != artifact_hash:
                         raise MaintenanceError("BACKUP_ARTIFACT_CORRUPT")
-                    target = _safe_file(staging, name)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(source, target)
+                    archive_sources[name] = source
                     files[name] = {"size": size, "sha256": artifact_hash}
             manifest = {"format": FORMAT, "format_version": FORMAT_VERSION, "schema_version": SCHEMA_VERSION,
                         "created_at": datetime.now(utc_timezone.utc).isoformat(),
@@ -185,7 +188,7 @@ def create_backup(generation_dir, output_path, *, expected_schema=None):
                     with zipfile.ZipFile(partial, "x", zipfile.ZIP_DEFLATED, allowZip64=True, compresslevel=6) as archive:
                         archive.write(staging / "manifest.json", "manifest.json")
                         for name in files:
-                            archive.write(staging / name, name)
+                            archive.write(archive_sources[name], name)
                 # Verify the final compressed bytes, not merely the pre-compression staging.
                 with performance.span("backup.verify", category="maintenance"):
                     with tempfile.TemporaryDirectory(prefix="verify-", dir=output_path.parent) as verification:

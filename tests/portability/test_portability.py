@@ -1,4 +1,5 @@
 from runtime.testing import force_credential_login
+import base64
 import hashlib
 import json
 import os
@@ -159,8 +160,8 @@ class PackageTests(unittest.TestCase):
         self.connection.close()
         self.temp.cleanup()
 
-    def set_artifact_size(self, byte_size):
-        """Write real, compressible HTML without allocating a huge test string."""
+    def set_artifact_size(self, byte_size, *, compressible=True):
+        """Write HTML incrementally; high-entropy content exercises disk budgets."""
         prefix, suffix = b'<!doctype html><html><body><!--', b'--></body></html>'
         temporary = self.generation / 'large.html'
         digest = hashlib.sha256()
@@ -168,7 +169,8 @@ class PackageTests(unittest.TestCase):
             target.write(prefix)
             digest.update(prefix)
             remaining = byte_size - len(prefix) - len(suffix)
-            chunk = b'x' * (1024 * 1024)
+            chunk = (b'x' * (1024 * 1024) if compressible
+                     else base64.b64encode(os.urandom(768 * 1024)))
             while remaining:
                 part = chunk[:min(remaining, len(chunk))]
                 target.write(part)
@@ -188,6 +190,23 @@ class PackageTests(unittest.TestCase):
         self.connection.commit()
         self.artifact, self.hash = artifact, artifact_hash
         return relative_path
+
+    @unittest.skipUnless(os.environ.get('BOOKMARK_TEST_QUOTA') == '1',
+                         'requires a dedicated filesystem up to 118 MiB with TMPDIR inside it')
+    def test_backup_and_restore_fit_a_quota_limited_filesystem(self):
+        import shutil
+        self.assertLessEqual(shutil.disk_usage(self.root).total, 118 * 1024**2)
+        relative_path = self.set_artifact_size(32 * 1024**2, compressible=False)
+        package = self.root / 'quota.bookmarklib.zip'
+        create_backup(self.generation, package)
+        candidate = self.root / 'restored'
+        manifest = validate_package(package, candidate, expected_schema=self.generation / 'library.sqlite3')
+        self.assertEqual(manifest['counts']['bookmarks'], 1)
+        self.assertEqual(manifest['counts']['snapshots'], 1)
+        self.assertEqual(hashlib.sha256((candidate / relative_path).read_bytes()).hexdigest(), self.hash)
+        self.assertEqual(hashlib.sha256(self.artifact.read_bytes()).hexdigest(), self.hash)
+        self.assertFalse(list(self.root.glob('backup-*')))
+        self.assertFalse(list(self.root.glob('verify-*')))
 
     def test_96_mib_artifact_backup_and_restore_round_trip(self):
         size = 96 * 1024**2
