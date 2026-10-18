@@ -2,6 +2,8 @@
 
 此包包含后端、预构建前端、对应源码、锁定依赖、Docker Compose、Nginx 示例和 SHA-256 清单。服务器需要 Linux、Docker Engine 与 Compose v2；构建应用镜像需要联网下载 Python 基础镜像和依赖，不需要 Node.js。基础镜像固定多架构 digest，支持 Linux amd64 / arm64；实际服务器验收仍需在目标架构执行。
 
+建议使用 v0.1.1 或更新的部署包；该版本修复 Nginx 大上传鉴权、非默认 HTTPS 端口、Linux 维护重启和容器 SQLite 恢复兼容问题。实际验证范围见[Docker 部署验收](../../docs/docker-deployment-acceptance.md)。
+
 版本与源码 commit 见包根目录 `release.json`。这是全新实例安装包，不包含本机收藏、账户、Passkey、私钥、证书、AI 密钥或运行数据。要迁移已有收藏，可在本机界面导出整库备份，在云端完成首次登录后恢复；备份不迁移登录凭据，需要在云端登记新的 Passkey。
 
 ## 首次启动
@@ -10,8 +12,8 @@
 
 ```sh
 sha256sum --ignore-missing -c SHA256SUMS.txt
-tar -xzf Linkarium-v0.1.0-deploy.tar.gz
-cd Linkarium-v0.1.0-deploy
+tar -xzf Linkarium-v0.1.1-deploy.tar.gz
+cd Linkarium-v0.1.1-deploy
 sha256sum -c SHA256SUMS
 sudo install -d -m 0700 -o 10001 -g 10001 /srv/linkarium/data
 cp deploy/cloud/.env.example deploy/cloud/.env
@@ -79,7 +81,7 @@ docker compose --env-file deploy/cloud/.env -f deploy/cloud/compose.yaml up -d -
 在 Git 仓库根目录，准备 uv、Python 3.13 和 Node.js 24 后执行：
 
 ```sh
-python scripts/build-deploy.py --ref HEAD --version v0.1.0
+python scripts/build-deploy.py --ref HEAD --version v0.1.1
 ```
 
-脚本仅导出指定 Git commit 的文件，从其 `uv.lock` 离线导出镜像依赖清单，并在临时目录执行锁定依赖安装和前端构建，输出 `output/releases/v0.1.0/` 中的 `.tar.gz`、`.zip` 与外层 `SHA256SUMS.txt`。不会将工作区未提交文件、`data/`、`.env` 或本机虚拟环境带入包中。源码及其许可证随包保留，适用 AGPL-3.0-only。
+脚本仅导出指定 Git commit 的文件，从其 `uv.lock` 离线导出镜像依赖清单，并在临时目录执行锁定依赖安装和前端构建，输出 `output/releases/v0.1.1/` 中的 `.tar.gz`、`.zip` 与外层 `SHA256SUMS.txt`。不会将工作区未提交文件、`data/`、`.env` 或本机虚拟环境带入包中。源码及其许可证随包保留，适用 AGPL-3.0-only。

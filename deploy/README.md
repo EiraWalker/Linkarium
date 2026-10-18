@@ -1,6 +1,6 @@
 # 部署入口
 
-GitHub Release 提供包含预构建前端的云服务器 deploy 包，服务器无需 Node.js。下载后从包根目录 `README-DEPLOY.md` 开始，或参阅[云服务器部署说明](cloud/README.md)。基础配置可独立启动收藏管理，网页采集通过额外的 Compose 配置接入已验收的宿主隔离服务。重新打包入口为 `python scripts/build-deploy.py --ref HEAD --version v0.1.0`。
+GitHub Release 提供包含预构建前端的云服务器 deploy 包，服务器无需 Node.js。下载后从包根目录 `README-DEPLOY.md` 开始，或参阅[云服务器部署说明](cloud/README.md)。基础配置可独立启动收藏管理，网页采集通过额外的 Compose 配置接入已验收的宿主隔离服务。重新打包入口为 `python scripts/build-deploy.py --ref HEAD --version v0.1.1`。
 
 应用由 `backend/supervisor.py` 管理 Web、单 worker 和备份恢复。数据存放当前主机的本地磁盘；`state.sqlite3`、`runtime/secret-key` 不进入收藏库备份。数据库 schema 变化必须先停服务，再备份、迁移和验证，不能运行 Web 同时迁移。
 
@@ -47,11 +47,11 @@ Windows 的标准启动入口另支持 `-LanHttps` 和可选 `-NetworkAdapter`�
 
 公开 HTTPS 时配置 `BOOKMARK_PASSKEY_ORIGIN=https://你的域名`、`BOOKMARK_HTTPS=1`、准确的 `BOOKMARK_ALLOWED_HOSTS`、完整的 `BOOKMARK_CSRF_ORIGINS=https://你的域名`，同时设置 `BOOKMARK_TRUST_PROXY=1` 与 `BOOKMARK_PROXY_PEER=实际代理TCP来源IP`。允许主机需保留用于容器内部健康检查的 `127.0.0.1`。Passkey 来源必须与用户浏览器地址一致；链接生成不会信任客户端 Host。Waitress 只信任这一个精确 IP 的 X-Forwarded-For / X-Forwarded-Proto；Nginx 用 `$remote_addr` 覆盖传入 X-Forwarded-For，并清空其他 forwarding headers，不追加客户端声明的链。原生 Nginx 到原生 loopback 服务通常是 `127.0.0.1`；宿主 Nginx 到 Docker 发布端口可能在容器中表现为 bridge gateway IP，必须在受控访问测试中确认应用看到的 TCP peer，再填写，不能直接照抄 127。多层代理/CDN 不在此单代理示例的信任范围内。
 
-当前已检查实际后端端点及 owner 鉴权返回值；**此 Nginx 配置尚未实际启动验证**。正式发布前还需运行 `nginx -t` 和真实匿名/登录大上传、chunked 上传、CSRF、代理 IP/HTTPS cookie 测试。直连 Waitress 的本机开发入口没有这层上传前鉴权门禁，公网入口须通过已验收的代理。
+该配置已实际运行 `nginx -t`，并通过匿名/登录 2 MiB 上传、chunked 上传、CSRF、代理来源、HTTPS cookie 和非默认 HTTPS 端口的测试，具体见 [Docker 部署验收](../docs/docker-deployment-acceptance.md)。普通、导入、恢复请求的超限声明长度均验证返回 413；未执行 16 GiB 实际恢复。直连 Waitress 的本机开发入口没有这层上传前鉴权门禁，公网入口须通过已验收的代理。
 
 应用容器非 root，丢弃 Linux capabilities，不挂 Docker socket。宿主 launcher 是独立的受控组件；启动 Compose 并不证明采集隔离已通过。Docker 与 Linux launcher 的运行验收结果须以本机实际测试报告为准。
 
-`requirements.lock` 由项目 `uv.lock` 导出，含精确版本和包哈希；依赖变化后使用 `uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file deploy/requirements.lock` 更新。前端按 npm lockfile 构建。Node/Python 基础镜像按主版本标签，正式发布另固定经测试的 image digest。
+`requirements.lock` 由项目 `uv.lock` 导出，含精确版本和包哈希；依赖变化后使用 `uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file deploy/requirements.lock` 更新。前端按 npm lockfile 构建，Python 基础镜像固定 image digest。应用镜像使用 Debian trixie 的 Python 3.13，使 SQLite 在 `trusted_schema=OFF` 时仍支持恢复库中的 JSON 约束；对应能力由 `tests/deploy/test_sqlite_runtime.py` 验证。
 
 ## 备份与恢复
 

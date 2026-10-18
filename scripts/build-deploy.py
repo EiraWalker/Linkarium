@@ -10,6 +10,8 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+VERSION_PATTERN = r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-.][A-Za-z0-9]+)*"
+
 
 def run(arguments, cwd):
     subprocess.run(arguments, cwd=cwd, check=True)
@@ -69,10 +71,11 @@ def build(ref, version, destination):
         shutil.copyfile(cloud / "dockerignore", package / ".dockerignore")
         # Copying the guide keeps the first file users see in sync with the repo.
         guide = (cloud / "README.md").read_text(encoding="utf-8")
-        guide = guide.replace("Linkarium-v0.1.0-deploy", name).replace("--version v0.1.0", f"--version {version}")
-        guide = guide.replace("output/releases/v0.1.0/", f"output/releases/{version}/")
+        guide = re.sub(f"Linkarium-{VERSION_PATTERN}-deploy", name, guide)
+        guide = re.sub(f"--version {VERSION_PATTERN}", f"--version {version}", guide)
+        guide = re.sub(f"output/releases/{VERSION_PATTERN}/", f"output/releases/{version}/", guide)
         for old, new in [("(../nginx.conf.example)", "(deploy/nginx.conf.example)"),
-                         ("(../../docs/authentication.md)", "(docs/authentication.md)"),
+                         ("(../../docs/", "(docs/"),
                          ("(../capture/README.md)", "(deploy/capture/README.md)"),
                          ("(../README.md)", "(deploy/README.md)")]:
             guide = guide.replace(old, new)
@@ -110,7 +113,7 @@ def main():
     parser.add_argument("--version", required=True, help="Release tag, for example v0.1.0")
     parser.add_argument("--output", type=Path, help="Empty output directory; defaults to output/releases/<version>")
     args = parser.parse_args()
-    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-.][A-Za-z0-9]+)*", args.version):
+    if not re.fullmatch(VERSION_PATTERN, args.version):
         parser.error("version must be a safe release tag such as v0.1.0 or v0.1.0-rc.1")
     project = Path(__file__).resolve().parents[1]
     build(args.ref, args.version, (args.output or project / "output" / "releases" / args.version).resolve())

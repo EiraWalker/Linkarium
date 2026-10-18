@@ -57,7 +57,7 @@ Windows 启动默认选择已连接的物理 Wi-Fi，无可用 Wi-Fi 时选择�
 
 Windows 的 `-DevelopmentCapture` 会在本机执行网页采集。使用 Clash Verge 时，可在“设置 → 网页缓存代理”配置本机代理；fake-IP DNS 环境也可启动时附加 `-PublicDns`。详见[缓存兼容性与代理](docs/capture-proxy.md)。
 
-当前版本可供本机使用。**完整 Linux 采集隔离尚未通过验收，Docker / Nginx 部署测试仍待完成**，公网生产部署需先完成对应验证。手机 Passkey 已验证 Android Chrome ＋ Google 密码管理工具，其他环境见 [Passkey 支持范围](https://github.com/EiraWalker/Linkarium/wiki/Passkey-Compatibility)。网页归档的兼容性以已测样本为准，验证码、受限资源和复杂动态内容可能导致抓取失败或显示差异。实际证据与限制见[实现与验收记录](docs/implementation-status.md)。
+当前版本可供本机使用。**Docker / Nginx 的收藏管理、HTTPS Passkey、上传鉴权、备份恢复和重启持久化已通过隔离数据验收**，环境和范围见 [Docker 部署验收](docs/docker-deployment-acceptance.md)。完整 Linux 采集隔离尚未通过验收，启用公网网页采集前仍需完成对应验证。手机 Passkey 已验证 Android Chrome ＋ Google 密码管理工具，其他环境见 [Passkey 支持范围](https://github.com/EiraWalker/Linkarium/wiki/Passkey-Compatibility)。网页归档的兼容性以已测样本为准，验证码、受限资源和复杂动态内容可能导致抓取失败或显示差异。实际证据与限制见[实现与验收记录](docs/implementation-status.md)。
 
 ## 文档
 
