@@ -40,7 +40,8 @@ def build(ref, version, destination):
         staging = Path(temporary).resolve()
         source = staging / "source.tar"
         with source.open("wb") as stream:
-            subprocess.run(["git", "archive", "--format=tar", f"--prefix={name}/", commit],
+            subprocess.run(["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                            "archive", "--format=tar", f"--prefix={name}/", commit],
                            cwd=project, stdout=stream, check=True)
         with tarfile.open(source) as archive:
             archive.extractall(staging, filter="data")
