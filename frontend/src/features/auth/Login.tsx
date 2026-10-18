@@ -73,7 +73,7 @@ export function Login({ onLogin, initializationRequired, maintenanceMode, passwo
   const openLogin = () => { clearEnrollmentIntent(); setOrdinaryLogin(true); setError(""); };
 
   return <main class={s.login}><div class={s.loginPanel}>
-    <div class={s.loginBrand}><Icon name="bookmark" size={36} /><h1>Linkarium</h1><p>让每一个好网站，都有它的位置。</p></div>
+    <div class={s.loginBrand}><Icon name="bookmark" size={36} /><h1>Linkarium</h1><p>我的网页收藏库</p></div>
     {maintenanceMode ? <p role="status">正在维护数据，请等待完成后重新连接。</p>
       : bootstrap && passwordEnabled ? <div>
         <p role="status">请先在部署电脑初始化调试账号。</p>
