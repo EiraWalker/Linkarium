@@ -1,6 +1,6 @@
 # 部署入口
 
-GitHub Release 提供包含预构建前端的云服务器 deploy 包，服务器无需 Node.js。下载后从包根目录 `README-DEPLOY.md` 开始，或参阅[云服务器部署说明](cloud/README.md)。基础配置可独立启动收藏管理，网页采集通过额外的 Compose 配置接入已验收的宿主隔离服务。重新打包入口为 `python scripts/build-deploy.py --ref HEAD --version v0.1.1`。
+GitHub Release 提供包含预构建前端的云服务器 deploy 包，服务器无需 Node.js。下载后从包根目录 `README-DEPLOY.md` 开始，或参阅[云服务器部署说明](cloud/README.md)。基础配置可独立启动收藏管理，网页采集通过额外的 Compose 配置接入已验收的宿主隔离服务。重新打包入口为 `python scripts/build-deploy.py --ref HEAD --version v0.1.2`。
 
 应用由 `backend/supervisor.py` 管理 Web、单 worker 和备份恢复。数据存放当前主机的本地磁盘；`state.sqlite3`、`runtime/secret-key` 不进入收藏库备份。数据库 schema 变化必须先停服务，再备份、迁移和验证，不能运行 Web 同时迁移。
 
@@ -13,7 +13,7 @@ GitHub Release 提供包含预构建前端的云服务器 deploy 包，服务器
 .\scripts\start.ps1 -DevelopmentCapture
 ```
 
-安装脚本会安装锁定依赖、构建前端、安装采集工具并离线准备数据库。服务就绪后，终端给出本次运行期间有效的初始化码；尚未登记首个 Passkey 时，每次重启都会签发新码并使旧码失效。用户打开网页、输入码并创建首个 Passkey。已有私钥可选传给 `setup.ps1 -PrivateKey`，保留原文件密钥初始化能力；详见[登录方式](../docs/authentication.md)。
+安装脚本会安装锁定依赖、构建前端、安装采集工具并离线准备数据库。服务就绪后，终端给出含 `#initialize=` 片段的完整注册链接与独立授权码；尚未登记首个 Passkey 时，每次重启都会签发新授权并使旧链接和码失效。用户打开该完整链接、输入码并创建首个 Passkey。普通登录地址加单独授权码不能完成首次登记。已有私钥可选传给 `setup.ps1 -PrivateKey`，保留原文件密钥初始化能力；详见[登录方式](../docs/authentication.md)。
 
 再次启动只需 start 脚本，访问终端打印的 `http://localhost:实际端口`；默认从 8000 寻找空闲端口，需要固定端口时附 `-Port 18765`。电脑和手机跨网络使用需部署同一个可访问的 HTTPS 域名，并设置 `BOOKMARK_PASSKEY_ORIGIN`；原始局域网 IP 不作为 Passkey 站点身份。需要密码调试时，安装和启动脚本均加 `-DebugAuth`。
 
@@ -23,9 +23,9 @@ Windows 的标准启动入口另支持 `-LanHttps` 和可选 `-NetworkAdapter`�
 
 ## Linux / Docker Compose
 
-1. 按 `deploy/capture/` 安装并验证宿主 launcher；确认 `/run/bookmark-capture/launcher.sock` 和 `/var/lib/bookmark-capture/spool` 已存在。应用 UID/GID 为 `10001`，launcher 专用 socket 组通过 `BOOKMARK_CAPTURE_GID` 配置，spool 必须授权该应用 UID 写入每次任务目录。
+1. 按 `deploy/capture/` 安装并验证宿主 launcher；确认 `/run/bookmark-capture/launcher.sock` 和 `/var/lib/bookmark-capture/spool` 已存在。应用 UID/GID 默认为 `10001`，通过 `BOOKMARK_CAPTURE_GID` 加入 launcher 的实际 socket / `app_gid` 组。spool 根目录为 root 拥有的 `0750`，只有 `incoming/` 为该组可写的 `0770`；`private/` 为 root 独占的 `0700`，`results/` 为 root 拥有、该组可读的 `0750`。保持 root 对这些目录的所有权。
 2. 在主机创建本地 data 目录、设置应用 UID `10001` 的读写权限。把 `deploy/.env.example` 复制为 `deploy/.env`，填写路径、域名和 HTTPS 配置，不把私钥、密码或 AI 密钥写入镜像。
-3. 首次安装无需私钥挂载。以下命令在项目根执行；supervisor 在实例锁内准备全新数据库，并在服务就绪后输出一次性初始化码：
+3. 首次安装无需私钥挂载。以下命令在项目根执行；supervisor 在实例锁内准备全新数据库，并在服务就绪后输出完整注册链接与独立授权码：
 
    ```sh
    docker compose --env-file deploy/.env -f deploy/compose.yaml build
@@ -33,7 +33,9 @@ Windows 的标准启动入口另支持 `-LanHttps` 和可选 `-NetworkAdapter`�
    docker compose --env-file deploy/.env -f deploy/compose.yaml exec app python backend/manage.py passkey_initialize
    ```
 
-4. 最后一条命令在管理员终端重发初始化码，并使启动时的首次码失效。打开 `BOOKMARK_PASSKEY_ORIGIN` 指定的地址、输入码并创建 Passkey。本机默认 `http://localhost:8000`；调整 `BOOKMARK_PORT` 时同步调整该来源的端口。公网使用下面的 HTTPS reverse proxy 配置。Compose 的应用端口只绑定宿主 loopback，不能直接对公网开放 Waitress；大文件的鉴权门禁必须在代理层执行。
+4. 最后一条命令在管理员终端重发首次登记授权，并使启动时的链接和码失效。打开新输出的完整 `#initialize=` 链接，再输入独立授权码创建 Passkey；链接来源由 `BOOKMARK_PASSKEY_ORIGIN` 指定，本机默认为 `http://localhost:8000`。调整 `BOOKMARK_PORT` 时同步调整该来源的端口。公网使用下面的 HTTPS reverse proxy 配置。Compose 的应用端口只绑定宿主 loopback，不能直接对公网开放 Waitress；大文件的鉴权门禁必须在代理层执行。
+
+已启用采集的旧实例，升级前停止应用和 launcher，更新同版本 launcher、隔离 rootfs 中的 capture 代码及上述目录权限。launcher 更新会使绑定旧 SHA-256 的 `VERIFIED.json` 失效；须在目标 Linux 主机重新完成隔离验收，按真实结果签发新证明后再启动，不能复用旧证明。
 
 初始化码和新设备授权只向管理员终端显示，不在健康检查、匿名会话状态或业务日志中返回；容器 stdout 可能由宿主日志驱动保留，因此按服务器控制台权限管理容器日志。已有安装的数据库升级须先停止服务，按下面的维护步骤执行，不能用上述启动命令自动迁移。
 
