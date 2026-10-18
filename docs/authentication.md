@@ -1,6 +1,6 @@
 # 登录与 Passkey
 
-Linkarium 继续使用单一所有者。正常模式支持 Passkey（Windows Hello、手机认证器、密码管理器及安全密钥），私钥文件登录可选；密码仅在显式 `--debug` 模式下可用。
+Linkarium 继续使用单一所有者。当前 Passkey 仅支持并验证了 Windows 上的 Passkey，以及 Android Chrome 中的 Google 密码管理工具；其他系统、浏览器、密码管理器和独立安全密钥尚未列入支持范围。兼容性与手机操作步骤见 [Passkey Wiki](https://github.com/EiraWalker/Linkarium/wiki/Passkey-Compatibility)。私钥文件登录可选；密码仅在显式 `--debug` 模式下可用。
 
 ## 首次安装与初始化
 
@@ -78,7 +78,9 @@ HTTPS 代理还需配置 `BOOKMARK_TRUST_PROXY` 和实际 TCP 来源 `BOOKMARK_P
 
 ## Android 密码管理器兼容性
 
-网站使用标准 WebAuthn 接口，由 Android 的通行密钥服务选择保存位置；不要求使用 Google 密码管理工具。Android 14 及以上可在系统设置选择已启用的密码管理器。注册和登录选项会携带已保存凭据的实际 `transports`；没有记录连接方式的旧凭据仍省略该提示。
+当前 Android 支持范围为 Chrome ＋ Google 密码管理工具。2026-10-18 已在 Android 15、Chrome 155.0.8059.79 真机完成新 Passkey 注册、退出及再次登录，并确认新会话使用刚创建的凭据。
+
+网站通过标准 WebAuthn 接口调用 Android 选择的通行密钥服务，未硬编码 Google 提供程序；这不代表其他提供程序已经通过兼容性验收。注册和登录选项会携带已保存凭据的实际 `transports`；没有记录连接方式的旧凭据仍省略该提示。
 
 2026-10-18 的真机排查发现，小米 FIDO `220250317` 不认识某些新增的连接方式，会在序列化凭据时触发空指针异常。保留已知的 `internal` 等提示可避免本次请求中因缺省连接方式扩展而出现的异常。
 
