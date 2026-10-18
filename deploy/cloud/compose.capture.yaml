@@ -1,0 +1,17 @@
+# Apply only after the host capture launcher has passed its acceptance checks.
+services:
+  app:
+    group_add:
+      - "${BOOKMARK_CAPTURE_GID:?Set BOOKMARK_CAPTURE_GID to the launcher socket group}"
+    volumes:
+      - type: bind
+        source: /run/bookmark-capture
+        target: /run/bookmark-capture
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/lib/bookmark-capture/spool
+        target: /capture-spool
+        bind:
+          create_host_path: false

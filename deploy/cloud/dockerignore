@@ -1,0 +1,11 @@
+**
+!backend/
+!backend/**
+!frontend/
+!frontend/dist/
+!frontend/dist/**
+!deploy/
+!deploy/requirements.lock
+!LICENSE
+**/__pycache__/
+**/*.pyc

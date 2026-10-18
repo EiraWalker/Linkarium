@@ -1,5 +1,7 @@
 # 部署入口
 
+GitHub Release 提供包含预构建前端的云服务器 deploy 包，服务器无需 Node.js。下载后从包根目录 `README-DEPLOY.md` 开始，或参阅[云服务器部署说明](cloud/README.md)。基础配置可独立启动收藏管理，网页采集通过额外的 Compose 配置接入已验收的宿主隔离服务。重新打包入口为 `python scripts/build-deploy.py --ref HEAD --version v0.1.0`。
+
 应用由 `backend/supervisor.py` 管理 Web、单 worker 和备份恢复。数据存放当前主机的本地磁盘；`state.sqlite3`、`runtime/secret-key` 不进入收藏库备份。数据库 schema 变化必须先停服务，再备份、迁移和验证，不能运行 Web 同时迁移。
 
 ## Windows 本机
