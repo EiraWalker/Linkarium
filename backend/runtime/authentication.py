@@ -18,7 +18,7 @@ from webauthn import (generate_registration_options, generate_authentication_opt
     verify_registration_response, verify_authentication_response, options_to_json, base64url_to_bytes)
 from webauthn.helpers import bytes_to_base64url
 from webauthn.helpers.structs import (AuthenticatorSelectionCriteria, ResidentKeyRequirement,
-    UserVerificationRequirement, PublicKeyCredentialDescriptor)
+    UserVerificationRequirement, PublicKeyCredentialDescriptor, AuthenticatorTransport)
 
 from library.errors import ApiError
 from .auth_grants import (authorize_registration, credential_exists, get_auth_state,
@@ -201,7 +201,9 @@ def _options(request, purpose, data):
         state = get_auth_state()
         user = get_user_model().objects.filter(username=settings.BOOKMARK_OWNER, is_active=True).first()
         credentials = list(PasskeyCredential.objects.filter(user=user, rp_id=rp_id)) if user else []
-        descriptors = [PublicKeyCredentialDescriptor(id=base64url_to_bytes(item.credential_id)) for item in credentials]
+        descriptors = [PublicKeyCredentialDescriptor(id=base64url_to_bytes(item.credential_id),
+            transports=[AuthenticatorTransport(value) for value in item.transports] or None)
+            for item in credentials]
         if purpose == "register":
             name = _name(data.get("name", grant.name if grant else "Passkey"))
             if grant:

@@ -100,6 +100,21 @@ class AuthenticationTests(TestCase):
         self.assertEqual(PasskeyCredential.objects.get().sign_count, 2)
         self.assertEqual(self.post("passkey/login/verify", data).status_code, 400)
 
+    def test_saved_transports_are_retained_in_registration_and_login_options(self):
+        self.register()
+        stored = PasskeyCredential.objects.get()
+        for transports in (["internal"], ["usb", "nfc"], ["internal", "hybrid"], []):
+            stored.transports = transports
+            stored.save(update_fields=["transports"])
+            for purpose, field in (("register", "excludeCredentials"), ("login", "allowCredentials")):
+                with self.subTest(transports=transports, purpose=purpose):
+                    descriptor = self.options(purpose)["options"][field][0]
+                    self.assertEqual(descriptor["id"], stored.credential_id)
+                    if transports:
+                        self.assertEqual(descriptor.get("transports"), transports)
+                    else:
+                        self.assertNotIn("transports", descriptor)
+
     def test_registration_requires_local_admin_grant(self):
         self.assertEqual(self.post("passkey/register/options", {}).status_code, 403)
         self.assertFalse(PasskeyChallenge.objects.filter(state="pending").exists())
