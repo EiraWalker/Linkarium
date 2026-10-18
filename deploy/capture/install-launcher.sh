@@ -10,7 +10,10 @@ capture_gid="${BOOKMARK_CAPTURE_GID:-10001}"
 if ! getent group "$capture_gid" >/dev/null; then groupadd -g "$capture_gid" bookmark-capture-app; fi
 install -d -m 0750 /opt/bookmark-capture /etc/bookmark-capture /run/bookmark-capture
 chgrp "$capture_gid" /run/bookmark-capture
-install -d -m 0770 -g "$capture_gid" /var/lib/bookmark-capture/spool
+install -d -m 0750 -g "$capture_gid" /var/lib/bookmark-capture/spool
+install -d -m 0770 -g "$capture_gid" /var/lib/bookmark-capture/spool/incoming
+install -d -m 0700 /var/lib/bookmark-capture/spool/private
+install -d -m 0750 -g "$capture_gid" /var/lib/bookmark-capture/spool/results
 install -m 0755 "$capture_source/launcher.py" /opt/bookmark-capture/launcher.py
 if [ ! -f /etc/bookmark-capture/launcher.json ]; then
   python3 - "$capture_source/launcher.example.json" "$capture_uid" "$capture_gid" <<'PY'

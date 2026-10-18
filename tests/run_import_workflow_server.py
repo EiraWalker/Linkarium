@@ -6,6 +6,7 @@ Does not fetch user bookmarks or validate Chromium/Monolith fidelity.
 import os
 from pathlib import Path
 import secrets
+import json
 import sys
 import threading
 import time
@@ -14,6 +15,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 os.environ["BOOKMARK_DATA_ROOT"] = os.environ.get("BOOKMARK_ACCEPTANCE_DATA_ROOT", str(ROOT / "output" / "import-workflow-data"))
+ACCEPTANCE_ROOT = Path(os.environ["BOOKMARK_DATA_ROOT"]).resolve()
+if not ACCEPTANCE_ROOT.is_relative_to((ROOT / 'output').resolve()):
+    raise SystemExit('Workflow acceptance requires an isolated data directory below this checkout/output')
+PORT = int(os.environ.get('BOOKMARK_ACCEPTANCE_PORT', '18767'))
 os.environ["BOOKMARK_DEBUG"] = "1"
 os.environ["BOOKMARK_AUTH_DEBUG"] = "1"
 os.environ["BOOKMARK_CAPTURE_MODE"] = "development"
@@ -51,6 +56,10 @@ if __name__ == "__main__":
     user.set_password(password)
     user.save()
     with InstanceLock(DATA_ROOT / "runtime" / "supervisor.lock"), patch("library.worker.capture_page", fixture_capture):
+        (DATA_ROOT / 'runtime' / 'acceptance-server.json').write_text(json.dumps({
+            'pid': os.getpid(), 'port': PORT, 'data_root': str(DATA_ROOT),
+            'fixture_capture': True, 'real_queue': True,
+        }), encoding='utf-8')
         threading.Thread(target=worker.run_worker, daemon=True).start()
-        print("Import workflow fixture: http://127.0.0.1:18767 (isolated library)", flush=True)
-        call_command("run_web", host="127.0.0.1", port=18767)
+        print(f"Import workflow fixture: http://127.0.0.1:{PORT} pid={os.getpid()} (isolated library)", flush=True)
+        call_command("run_web", host="127.0.0.1", port=PORT)

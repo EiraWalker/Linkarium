@@ -123,19 +123,34 @@ export function Transfers() {
     try {
       const form = new FormData();
       form.set("file", file);
-      const { data } = await request<ImportBatch>("/imports", {
+      const { data } = await request<ImportBatch>("/imports/preview", {
         method: "POST", body: form, key: idempotencyKey(),
       });
       setBatchId(data.id);
       app.route.params({ import: data.id }, true);
       try { sessionStorage.setItem(importStorageKey, data.id); } catch {}
       app.reloadImports();
-      app.notify("已开始导入，将依次抓取双端快照并生成分类建议。");
+      app.notify("解析完成，请核对工作量后确认导入。");
     } catch (e) {
       setError(errorMessage(e));
     } finally {
       setBusy(null);
     }
+  }
+  async function confirmImport() {
+    const batch = imports.data;
+    if (!batch?.execution_plan?.can_execute) return;
+    setBusy("import-execute"); setError("");
+    try {
+      const { data } = await request<ImportBatch>(`/imports/${batch.id}/execute`, {
+        method: "POST", key: idempotencyKey(),
+        body: { confirmation_token: batch.execution_plan.confirmation_token },
+      });
+      imports.setResponse({ data });
+      app.reloadImports();
+      app.notify("已确认导入，将按本次配额抓取并生成分类建议。");
+    } catch (failure) { setError(errorMessage(failure)); }
+    finally { setBusy(null); }
   }
   async function startOperation(kind: "backup" | "restore") {
     if (kind === "restore" && !restoreFile) return;
@@ -223,7 +238,7 @@ export function Transfers() {
           支持 Chrome 和 Firefox 导出的 HTML
           书签文件。重复网址跳过，已有标签、备注和快照保持原样。
         </p>
-        <Field label="选择浏览器 HTML 文件" hint="选择文件后立即运行导入、双端抓取和 AI 分类；完成后校对。">
+        <Field label="选择浏览器 HTML 文件" hint="先预览条目和工作量，确认后导入并抓取。">
           <input type="file" accept=".html,.htm,text/html"
             disabled={!!busy || app.imports.some((batch) => ["queued", "running"].includes(batch.state))}
             onChange={(e) => {
@@ -253,6 +268,12 @@ export function Transfers() {
                 <small>无效条目</small>
               </div>
             </div>
+            {imports.data.execution_plan && <div class={s.workflow}>
+              <p>确认后最多创建 {imports.data.execution_plan.captures} 个双端抓取任务，最多进行 {imports.data.execution_plan.ai_requests} 次 AI 请求（含目录规划）。</p>
+              {imports.data.execution_plan.can_execute
+                ? <Button primary disabled={!!busy} onClick={() => void confirmImport()}>确认导入 {imports.data.valid} 个网站</Button>
+                : <p role="alert">每次最多执行 {imports.data.execution_plan.entry_limit} 个网站的抓取和分类，请拆分文件。</p>}
+            </div>}
             <p>
               状态：{stateLabel(imports.data.state)}
               {imports.data.imported !== undefined
@@ -275,11 +296,6 @@ export function Transfers() {
                 </p>
                 <Button onClick={() => app.review({ importId: imports.data!.id })}>查看建议</Button>
               </>
-            )}
-            {imports.data.total > 1000 && (
-              <p class="muted">
-                超过首版千站验收范围，仍会完整导入，不截断条目。
-              </p>
             )}
             {imports.data.entries && (
               <details>
@@ -409,11 +425,15 @@ export function Transfers() {
                     确认覆盖恢复
                   </Button>
                   <Button
-                    onClick={() => {
-                      setPending(null);
-                      storeOperation(null);
-                      setError("");
-                    }}
+                    disabled={!!busy}
+                    onClick={() => void (async () => {
+                      setBusy("restore-cancel"); setError("");
+                      try {
+                        await request(`/restores/${pending.id}/cancel`, { method: "POST", body: {} });
+                        setPending(null); storeOperation(null);
+                      } catch (failure) { setError(errorMessage(failure)); }
+                      finally { setBusy(null); }
+                    })()}
                   >
                     取消本次恢复
                   </Button>

@@ -6,12 +6,10 @@ import {
 import { ApiError, errorMessage, getSession, request } from "../../api/client";
 import type { PasskeyRegistrationResult } from "../../api/types";
 
-export type EnrollmentIntent = { kind: "enroll" | "reset"; token: string } | { kind: "obsolete" };
+export type EnrollmentIntent = { kind: "initialize" | "enroll" | "reset"; token: string } | { kind: "obsolete" };
 export type RegistrationAuthorization =
   | { kind: "local" }
-  | { kind: "bootstrap"; code: string }
-  | { kind: "first_passkey"; code: string }
-  | { kind: "enroll" | "reset"; token: string; code: string };
+  | { kind: "initialize" | "enroll" | "reset"; token: string; code: string };
 export interface PendingRegistration {
   challenge_id: string;
   credential: RegistrationResponseJSON;
@@ -27,7 +25,7 @@ export function clearEnrollmentIntent() {
 function storedEnrollment(): StoredEnrollment | null {
   try {
     const saved = JSON.parse(sessionStorage.getItem(ENROLLMENT_STORAGE) ?? "null") as StoredEnrollment | null;
-    if (saved && ["enroll", "reset"].includes(saved.intent?.kind) && typeof saved.intent.token === "string"
+    if (saved && ["initialize", "enroll", "reset"].includes(saved.intent?.kind) && typeof saved.intent.token === "string"
       && saved.intent.token && Number.isFinite(saved.expiresAt) && saved.expiresAt > Date.now()) return saved;
   } catch { /* Invalid or unavailable tab storage cannot authorize anything. */ }
   clearEnrollmentIntent();
@@ -35,13 +33,14 @@ function storedEnrollment(): StoredEnrollment | null {
 }
 
 function expireTabEnrollment(deadline: number) {
+  if (deadline === Number.MAX_SAFE_INTEGER) return;
   window.setTimeout(() => { storedEnrollment(); }, Math.max(0, deadline - Date.now()));
 }
 
 /** Keep an unfinished link in this tab across reloads; the server owns its real deadline. */
 export function consumeEnrollmentIntent(): EnrollmentIntent | null {
   const params = new URLSearchParams(location.hash.slice(1));
-  const kind = params.has("reset") ? "reset" : params.has("enroll") ? "enroll" : null;
+  const kind = params.has("reset") ? "reset" : params.has("initialize") ? "initialize" : params.has("enroll") ? "enroll" : null;
   const intent: EnrollmentIntent | null = kind
     ? { kind, token: params.get(kind) ?? "" }
     : params.has("passkey-setup") ? { kind: "obsolete" } : null;
@@ -54,7 +53,7 @@ export function consumeEnrollmentIntent(): EnrollmentIntent | null {
   if (intent.kind === "obsolete") clearEnrollmentIntent();
   else {
     const expiresAt = saved?.intent.kind === intent.kind && saved.intent.token === intent.token
-      ? saved.expiresAt : Date.now() + (intent.kind === "reset" ? 10 : 5) * 60_000;
+      ? saved.expiresAt : intent.kind === "initialize" ? Number.MAX_SAFE_INTEGER : Date.now() + (intent.kind === "reset" ? 10 : 5) * 60_000;
     try {
       sessionStorage.setItem(ENROLLMENT_STORAGE, JSON.stringify({ intent, expiresAt }));
       expireTabEnrollment(expiresAt); persisted = true;
@@ -88,6 +87,7 @@ export function passkeyError(error: unknown): string {
       AUTH_LAST_CREDENTIAL: "这是最后一种可用登录凭据，添加另一种后才能删除。",
       AUTH_REVOKED: "登录凭据已撤销，请重新登录。",
       AUTH_ATTEMPT_IN_PROGRESS: "登记正在处理中，请稍后确认结果。",
+      AUTH_RATE_LIMITED: "认证请求过多，请稍后重试。",
     };
     if (messages[error.code]) return messages[error.code];
   }
@@ -104,8 +104,6 @@ export function registrationMayHaveCompleted(error: unknown) {
 export async function createPasskey(name: string, authorization: RegistrationAuthorization): Promise<PendingRegistration> {
   requirePasskeySupport();
   const body = authorization.kind === "local" ? { name }
-    : authorization.kind === "bootstrap" ? { name, bootstrap_code: authorization.code }
-    : authorization.kind === "first_passkey" ? { name, first_passkey_code: authorization.code }
     : { name, enrollment_token: authorization.token, authorization_code: authorization.code };
   const { data } = await request<{
     options: PublicKeyCredentialCreationOptionsJSON; challenge_id: string; expires_at: string;

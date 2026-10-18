@@ -37,7 +37,7 @@ class UploadGateTests(unittest.TestCase):
         target = urlsplit(self.origin)
         context = ssl.create_default_context() if self.verify else ssl._create_unverified_context()
         cases = (("/api/v1/bookmarks", 2 * 1024 * 1024),
-                 ("/api/v1/imports/preview", 21 * 1024 * 1024),
+                 ("/api/v1/imports/preview", 22 * 1024 * 1024),
                  ("/api/v1/restores/validate", 16 * 1024 ** 3 + 1))
         for path, size in cases:
             with self.subTest(path=path):

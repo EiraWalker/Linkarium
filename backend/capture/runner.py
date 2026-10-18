@@ -125,13 +125,16 @@ def capture(request: CaptureRequest) -> CaptureResult:
     from .proxy_config import request_proxy, HttpProxyConnector
     upstream = request_proxy(request)
     event('network_setup')
-    if request.dns_mode == 'public-doh' or upstream:
+    if request.development or request.dns_mode == 'public-doh' or upstream:
         if os.environ.get('BOOKMARK_PUBLIC_DEPLOYMENT') == '1':
-            raise CaptureError('isolation_required', 'Development DoH capture is prohibited in a public deployment')
+            raise CaptureError('isolation_required', 'Development capture is prohibited in a public deployment')
         from .doh_proxy import PublicDohResolver, PinnedPublicProxy
-        resolver = PublicDohResolver(deadline=deadline, proxy_url=upstream or None)
+        from .network import SystemResolver
+        resolver = (PublicDohResolver(deadline=deadline, proxy_url=upstream or None)
+                    if request.dns_mode == 'public-doh' or upstream else SystemResolver(deadline))
         proxy = PinnedPublicProxy(resolver,request.max_bytes,deadline,request.deny_hosts,
-                                  connector=HttpProxyConnector(upstream) if upstream else None).start()
+                                  connector=HttpProxyConnector(upstream) if upstream else None,
+                                  allow_test_hosts=request.allow_test_hosts).start()
         event('upstream_proxy', enabled=bool(upstream))
         try:
             return stable_capture(proxy)
@@ -166,7 +169,8 @@ def _capture(request: CaptureRequest, proxy=None, deadline=None, budget=None) ->
     if request.development:
         warnings.append('development-network-isolation-not-verified')
     if proxy:
-        warnings.append('development-public-doh-pinned-ip-proxy')
+        warnings.append('development-public-doh-pinned-ip-proxy' if request.dns_mode == 'public-doh' or request.proxy_url
+                        else 'development-system-dns-pinned-ip-proxy')
     resources: dict[str, Resource] = {}
     response_stats = {}
     static_gifs = {}

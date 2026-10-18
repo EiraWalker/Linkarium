@@ -146,7 +146,7 @@ class Supervisor:
         from django.db import transaction
         from django.db.models import Q
         from runtime.models import RuntimeState, MaintenanceOperation
-        from runtime.maintenance import _validate_database
+        from runtime.maintenance import validate_database_isolated
         from config.paths import generation_root
         for operation in MaintenanceOperation.objects.using("default").filter(
                 Q(state="running") | Q(state="queued", kind__in=["clear", "reset"])):
@@ -163,7 +163,7 @@ class Supervisor:
             state = RuntimeState.objects.using("default").get(pk=1)
             if operation.kind == "restore" and state.active_generation == operation.target_generation:
                 try:
-                    _validate_database(generation_root(state.active_generation) / "library.sqlite3")
+                    validate_database_isolated(generation_root(state.active_generation) / "library.sqlite3")
                     self.start_services()
                     if not self.ready_services():
                         raise RuntimeError("Candidate did not become ready")
@@ -193,7 +193,8 @@ class Supervisor:
         from django.core.management import call_command
         from django.core.management.base import CommandError
         from runtime.models import RuntimeState, MaintenanceOperation
-        from runtime.maintenance import process_operation
+        from runtime.maintenance import process_operation, cleanup_restore_data
+        from runtime.auth_challenges import cleanup_authentication_state
         from runtime.performance import span, trace
         from config.paths import DATA_ROOT
         from runtime.network_access import record_connection, clear_connection
@@ -203,8 +204,11 @@ class Supervisor:
             # same cleanup boundary as the steady-state loop.
             with trace("service.startup"):
                 invalidate_initialization_grants()
+                cleanup_restore_data(startup=True)
                 with span("service.recover"):
                     self.recover_interrupted()
+                    cleanup_restore_data()
+                    cleanup_authentication_state()
                 if RuntimeState.objects.using("default").get(pk=1).maintenance_mode:
                     raise RuntimeError("Maintenance recovery requires operator repair; preserved library generations")
                 with span("service.spawn"):
@@ -223,7 +227,8 @@ class Supervisor:
                 print(f"访问地址：{connection['access_url']}（{connection['adapter']}）", flush=True)
             if self.https:
                 print(f"CA 证书：{self.https.ca_path.resolve()}", flush=True)
-                print(f"证书安装页：{self.https.certificate_url}", flush=True)
+                print(f"CA SHA-256：{self.https._fingerprint(self.https.ca_path)}", flush=True)
+                print(f"服务器本机证书页：{self.https.certificate_url}；新设备请通过独立可信渠道传输证书并核对上述指纹。", flush=True)
             from runtime.authentication import normalize_origin
             if not passkey_exists(normalize_origin(origin)[1]):
                 try:
@@ -234,7 +239,12 @@ class Supervisor:
                     # announcement. It must not stop the newly initialized app.
                     if not passkey_exists(normalize_origin(origin)[1]):
                         raise
+            next_housekeeping = time.monotonic() + 60
             while self.running:
+                if time.monotonic() >= next_housekeeping:
+                    cleanup_restore_data()
+                    cleanup_authentication_state()
+                    next_housekeeping = time.monotonic() + 60
                 operation = MaintenanceOperation.objects.using("default").filter(
                     state__in=["queued", "validating"]).order_by("created_at").first()
                 if operation:

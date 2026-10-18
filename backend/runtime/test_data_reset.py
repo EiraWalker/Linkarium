@@ -94,8 +94,10 @@ class DataErasureTests(TransactionTestCase):
         self.addCleanup(self.pointer.stop)
         self.generation = self.root / "generations" / "initial"
         self.generation.mkdir(parents=True)
+        source = connections["library"].connection
+        self.assertFalse(source.in_transaction, "Fixture backup requires a committed source; an earlier test leaked a transaction")
         with closing(sqlite3.connect(self.generation / "library.sqlite3")) as database:
-            connections["library"].connection.backup(database)
+            source.backup(database)
         for path in [self.generation / "artifacts" / "private.html", self.root / "backups" / "private.zip",
                 self.root / "work" / "capture" / "private.html", self.root / "generations" / "old-restore" / "private.html"]:
             path.parent.mkdir(parents=True, exist_ok=True)

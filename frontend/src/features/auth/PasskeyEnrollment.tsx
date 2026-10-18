@@ -8,13 +8,14 @@ import {
 } from "./passkeyClient";
 import s from "./PasskeyEnrollment.module.css";
 
-type Mode = "local" | "bootstrap" | "first_passkey" | Exclude<EnrollmentIntent, { kind: "obsolete" }>;
+type Mode = "local" | Exclude<EnrollmentIntent, { kind: "obsolete" }>;
 
-export function PasskeyEnrollment({ mode, onComplete, onLogin, disabled = false }: {
+export function PasskeyEnrollment({ mode, onComplete, onLogin, disabled = false, initialization = false }: {
   mode: Mode;
   onComplete: (result: PasskeyRegistrationResult) => Promise<void>;
   onLogin?: () => void;
   disabled?: boolean;
+  initialization?: boolean;
 }) {
   const [name, setName] = useState("这台设备");
   const [code, setCode] = useState("");
@@ -25,7 +26,7 @@ export function PasskeyEnrollment({ mode, onComplete, onLogin, disabled = false 
   const inFlight = useRef(false);
   const [registered, setRegistered] = useState(false);
   const kind = typeof mode === "string" ? mode : mode.kind;
-  const codeLabel = kind === "bootstrap" ? "初始化码" : "授权码";
+  const codeLabel = initialization ? "初始化码" : "授权码";
 
   async function submit(event: Event) {
     event.preventDefault();
@@ -41,7 +42,6 @@ export function PasskeyEnrollment({ mode, onComplete, onLogin, disabled = false 
       }
       if (!current) {
         const authorization: RegistrationAuthorization = mode === "local" ? { kind: "local" }
-          : mode === "bootstrap" || mode === "first_passkey" ? { kind: mode, code: code.trim() }
           : { ...mode, code: code.trim() };
         current = await createPasskey(name.trim(), authorization);
         setPending(current);
@@ -58,9 +58,9 @@ export function PasskeyEnrollment({ mode, onComplete, onLogin, disabled = false 
     } catch (failure) {
       if (failure instanceof ApiError && ["AUTH_GRANT_EXPIRED", "AUTH_GRANT_USED", "AUTH_GRANT_LOCKED", "AUTH_REVOKED"].includes(failure.code)) clearEnrollmentIntent();
       if (!current || !registrationMayHaveCompleted(failure)) setPending(null);
-      setError(failure instanceof ApiError && kind === "bootstrap" && failure.code.startsWith("AUTH_GRANT_")
+      setError(failure instanceof ApiError && initialization && failure.code.startsWith("AUTH_GRANT_")
         ? failure.code === "AUTH_GRANT_INVALID" ? "初始化码无效，请核对后重试。" : "初始化码已失效，请从服务器终端重新获取。"
-        : failure instanceof ApiError && ["reset", "first_passkey"].includes(kind) && ["AUTH_GRANT_EXPIRED", "AUTH_GRANT_LOCKED"].includes(failure.code)
+        : failure instanceof ApiError && kind === "reset" && ["AUTH_GRANT_EXPIRED", "AUTH_GRANT_LOCKED"].includes(failure.code)
           ? "授权码已失效，请从服务器终端重新获取。" : passkeyError(failure));
     } finally {
       inFlight.current = false; setBusy(false);
@@ -77,7 +77,7 @@ export function PasskeyEnrollment({ mode, onComplete, onLogin, disabled = false 
     {kind !== "local" && <Field label={codeLabel}>
       <input type="text" inputMode="numeric" autoComplete="one-time-code" autoCapitalize="none" spellcheck={false}
         required maxLength={128} value={code} disabled={busy || !!pending || !!completed || disabled}
-        onInput={e => setCode(e.currentTarget.value)} placeholder={kind === "bootstrap" ? "输入服务器终端显示的初始化码" : "输入另行提供的授权码"} />
+        onInput={e => setCode(e.currentTarget.value)} placeholder={initialization ? "输入服务器终端显示的初始化码" : "输入另行提供的授权码"} />
     </Field>}
     <Field label="Passkey 名称">
       <input type="text" required maxLength={100} value={name} disabled={busy || !!pending || !!completed || disabled}

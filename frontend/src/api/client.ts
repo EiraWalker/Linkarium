@@ -33,6 +33,17 @@ export async function request<T>(
   if (method !== "GET" && method !== "HEAD") headers["X-CSRFToken"] = csrfToken;
   if (options.key) headers["Idempotency-Key"] = options.key;
   const form = options.body instanceof FormData;
+  if (form) {
+    let size = 65536;
+    for (const value of (options.body as FormData).values())
+      size += value instanceof Blob ? value.size : new TextEncoder().encode(value).length;
+    if (size > 1024 * 1024) {
+      const { data } = await request<{ upload_token: string }>("/runtime/uploads", {
+        method: "POST", body: { path: `/api/v1${path}`, size }, signal: options.signal,
+      });
+      headers["X-Linkarium-Upload"] = data.upload_token;
+    }
+  }
   if (options.body !== undefined && !form)
     headers["Content-Type"] = "application/json";
   let response: Response;

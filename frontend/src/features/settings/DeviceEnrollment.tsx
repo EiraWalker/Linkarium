@@ -23,7 +23,6 @@ export function DeviceEnrollment({ connection, canAuthorize = true }: {
   const active = !!grant && remaining > 0;
   const accessOnly = connection?.mode === "http";
   const qrValue = accessOnly ? connection.access_url : active ? grant?.enrollment_url : null;
-  const certificateUrl = connection?.mode === "lan_https" ? connection.certificate_url : null;
 
   useEffect(() => {
     if (!grant) return;
@@ -68,6 +67,7 @@ export function DeviceEnrollment({ connection, canAuthorize = true }: {
       {!accessOnly && <div><dt>服务器地址</dt><dd>{connection.access_url}</dd></div>}
     </dl>}
     <p class="muted">{accessOnly ? "启用 HTTPS 后可添加其他设备的 Passkey。" : "新手机扫码，或在新电脑打开链接，再输入授权码。"}</p>
+    {connection?.mode === "lan_https" && <p class="muted">新设备的 CA 证书请从服务器本机通过可信渠道传输，核对服务器终端的 SHA-256 指纹后安装。</p>}
     <ErrorNotice message={error} />
     {accessOnly && connection ? <div class={s.grant}>
       <canvas ref={canvas} role="img" aria-label="网站访问二维码" class={s.qr} />
@@ -89,9 +89,6 @@ export function DeviceEnrollment({ connection, canAuthorize = true }: {
     {copyStatus && <p role="status">{copyStatus}</p>}
     {!accessOnly && <div class={s.actions}>
       {canAuthorize && <Button onClick={() => void generate()} disabled={busy}>{busy ? "正在生成…" : grant ? "生成新的授权" : "生成链接和授权码"}</Button>}
-      {certificateUrl && <Button onClick={() => {
-        window.open(certificateUrl, "_blank", "noopener,noreferrer");
-      }}>安装 CA 证书</Button>}
     </div>}
   </div>;
 }

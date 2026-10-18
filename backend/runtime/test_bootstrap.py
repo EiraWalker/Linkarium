@@ -173,7 +173,8 @@ LibrarySettings.objects.create(pk=1)
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM auth_user"), 1)
         result = self.run_command("passkey_initialize")
         self.assertIn("First Passkey for the existing owner", result.stdout)
-        self.assertEqual(re.search(r"^Open: (.+)$", result.stdout, re.MULTILINE).group(1), "http://localhost:18790/login")
+        self.assertRegex(re.search(r"^Open: (.+)$", result.stdout, re.MULTILINE).group(1),
+            r"^http://localhost:18790/login#initialize=[A-Za-z0-9_-]{43}$")
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM runtime_filekeycredential"), 1)
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM auth_user"), 1)
         with closing(sqlite3.connect(self.root / "state.sqlite3")) as connection:

@@ -32,7 +32,7 @@ ENV = {key: value for key, value in os.environ.items() if not key.startswith("BO
 }}
 ENV.update(BOOKMARK_DATA_ROOT=str(DATA), BOOKMARK_PERF="0", BOOKMARK_DEBUG="0", BOOKMARK_AUTH_DEBUG="0",
            BOOKMARK_HTTPS="0", BOOKMARK_TRUST_PROXY="0", BOOKMARK_ALLOWED_HOSTS="localhost,127.0.0.1",
-           PLAYWRIGHT_BROWSERS_PATH=str(ROOT / "tools" / "browsers"), PYTHONDONTWRITEBYTECODE="1")
+           PLAYWRIGHT_BROWSERS_PATH=os.environ.get("PLAYWRIGHT_BROWSERS_PATH", str(ROOT / "tools" / "browsers")), PYTHONDONTWRITEBYTECODE="1")
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = ENV["PLAYWRIGHT_BROWSERS_PATH"]
 REPORT = {"state": "running", "checks": [], "step": "prepare", "isolated_data": str(DATA),
           "isolated_code": str(SITE), "frontend_build": str(BUILD), "real_device_acceptance": "not run"}
@@ -186,10 +186,26 @@ def main():
                            if "/api/v1/session/" in request.url and "PRIVATE KEY" in (request.post_data or "") else None)
                 return context
 
+            step("anonymous guesses do not allocate sessions or lock first registration")
+            for _ in range(6):
+                anonymous = new_context()
+                rejected = api(anonymous, origin, "/session/passkey/register/options", "POST", {
+                    "enrollment_token": uuid.uuid4().hex + uuid.uuid4().hex, "authorization_code": "00000000",
+                })
+                assert rejected.status == 403
+                assert not any(cookie["name"] in {"sessionid", "linkarium_auth_nonce"} for cookie in anonymous.cookies())
+                anonymous.close()
+            assert manage("shell", "-c", "from django.contrib.sessions.models import Session; print(Session.objects.count())").strip().endswith("0")
+            assert manage("shell", "-c", "from runtime.models import EnrollmentGrant; print(EnrollmentGrant.objects.get(active_slot='bootstrap').failed_attempts)").strip().endswith("0")
+            passed("invalid anonymous links allocate no login sessions or nonce cookies and cannot consume the first grant's attempts")
+
             step("first initialization through built UI")
             original = new_context()
             page = original.new_page()
             cdp, authenticator = add_authenticator(original, page)
+            page.goto(origin + "/login")
+            expect(page.get_by_text("请打开服务器终端提供的完整注册链接，再输入授权码。", exact=True)).to_be_visible()
+            assert not page.get_by_label("初始化码", exact=True).count()
             page.goto(first_url)
             expect(page.get_by_role("heading", name="首次配置", exact=True)).to_be_visible()
             assert not session(original, origin)["authenticated"]
@@ -282,12 +298,14 @@ def main():
             assert api(original, origin, "/bookmarks").status == 401
             assert api(restored, origin, "/bookmarks").status == 401
             assert api(mobile, origin, "/bookmarks").status == 200
+            restored.close()
             passed("rename persists; deleting a passkey revokes both associated sessions and preserves unrelated sessions")
 
             step("delete the current passkey and guard the last credential")
             remove_passkey(mobile_page, phone_panel, "Phone passkey")
             mobile_page.wait_for_url("**/login", timeout=20000)
             assert not session(mobile, origin)["authenticated"]
+            mobile.close()
             page.goto(origin + "/login")
             page.get_by_role("button", name="Passkey 登录", exact=True).click()
             page.wait_for_url("**/library", timeout=20000)
@@ -359,9 +377,10 @@ def main():
             denied_password = api(original, origin, "/session/login", "POST", {"password": "654321", "debug": True})
             assert denied_password.status == 403 and denied_password.json()["error"]["code"] == "PASSWORD_LOGIN_DISABLED"
             assert not private_key_leaked and not errors
+            file_context.close()
             passed("old file key cannot log in; replacement passkey logs in; normal password endpoint rejects debug bypass")
 
-            step("existing owner without any Passkey sees a code-only first setup form")
+            step("existing owner without any Passkey needs the terminal's complete first setup link")
             manage("file_key_setup", "--generate", str(legacy_private))
             current_id = session(original, origin)["credential_id"]
             assert api(original, origin, "/session/passkeys/" + current_id, "DELETE").status == 200
@@ -376,12 +395,15 @@ def main():
             assert not legacy_state["initialization_required"] and not legacy_state["passkey_configured"] and legacy_state["file_key_configured"]
             legacy_page.screenshot(path=str(OUT / "04-existing-owner-first-passkey.png"))
             code_url, code_only = console_grant("passkey_initialize")
-            assert code_url == origin + "/login"
+            assert code_url.startswith(origin + "/login#initialize=")
+            expect(legacy_page.get_by_text("请打开服务器终端提供的完整注册链接，再输入授权码。", exact=True)).to_be_visible()
+            assert not legacy_page.get_by_label("授权码", exact=True).count()
+            legacy_page.goto(code_url)
             enroll(legacy_page, code_only, "Existing owner first passkey")
             assert session(legacy, origin)["file_key_configured"]
             assert api(legacy, origin, "/bookmarks/" + bookmark_id).json()["data"]["notes"] == "Must survive credential reset"
             assert len(api(legacy, origin, "/session/passkeys").json()["data"]["items"]) == 1
-            passed("existing owner with zero Passkeys configures the first one using only a terminal code; owner, optional file key and bookmarks survive")
+            passed("existing owner with zero Passkeys configures the first one using a secret terminal link and independent code; owner, optional file key and bookmarks survive")
 
             step("expired enrollment state is discarded and a configured site shows normal login")
             expired = new_context()
@@ -417,8 +439,6 @@ if __name__ == "__main__":
         browser_error = re.search(r"net::[A-Z_]+", str(error))
         if browser_error:
             REPORT["browser_error_type"] = browser_error.group(0)
-        REPORT["error_message"] = re.sub(r"\b\d{8}\b", "<redacted>", re.sub(
-            r"#(?:enroll|reset|passkey-setup)=[^\s\"']+", "#<redacted>", str(error)))[:1500]
         REPORT["error_location"] = [{"function": frame.name, "line": frame.lineno} for frame in traceback.extract_tb(error.__traceback__)
                                     if Path(frame.filename).resolve() == Path(__file__).resolve()]
         status = 1

@@ -14,7 +14,8 @@ class Command(BaseCommand):
         from config.paths import DATA_ROOT
         tempfile.tempdir = str(DATA_ROOT / "work" / "http")
         from config.wsgi import application
-        from waitress import serve
+        from waitress.server import create_server
+        from runtime.ingress import ANONYMOUS_LIMIT, install_body_gate
         from runtime.network_access import web_addresses
         proxy_options = {}
         if os.environ.get("BOOKMARK_TRUST_PROXY", "0") == "1":
@@ -22,4 +23,10 @@ class Command(BaseCommand):
             ipaddress.ip_address(peer)  # Reject a wildcard or ambiguous hostname.
             proxy_options = {"trusted_proxy": peer, "trusted_proxy_count": 1, "trusted_proxy_headers": {"x-forwarded-for", "x-forwarded-proto"}}
         listeners = " ".join(f"{'[' + host + ']' if ':' in host else host}:{options['port']}" for host in web_addresses(options["host"]))
-        serve(application, listen=listeners, threads=4, clear_untrusted_proxy_headers=True, max_request_body_size=16*1024*1024*1024, **proxy_options)
+        transport = {}
+        server = create_server(application, map=transport, listen=listeners, threads=4,
+            clear_untrusted_proxy_headers=True, max_request_body_size=ANONYMOUS_LIMIT + 1,
+            inbuf_overflow=2 * ANONYMOUS_LIMIT, connection_limit=128,
+            max_request_header_size=16384, channel_timeout=30, **proxy_options)
+        install_body_gate(transport)
+        server.run()

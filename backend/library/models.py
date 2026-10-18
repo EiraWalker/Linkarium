@@ -237,6 +237,11 @@ class ClassificationProposal(Entity):
 
 
 class ImportBatch(models.Model):
+    confirmation_digest = models.CharField(max_length=64, blank=True)
+    execution_authorization = models.TextField(blank=True)
+    capture_budget = models.PositiveIntegerField(default=0)
+    ai_budget = models.PositiveIntegerField(default=0)
+    ai_requests_used = models.PositiveIntegerField(default=0)
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     state = models.CharField(max_length=24, default="preview")
     source_type = models.CharField(max_length=24, default="browser")

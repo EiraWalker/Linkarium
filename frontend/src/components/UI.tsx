@@ -276,7 +276,7 @@ export function Time({ value }: { value?: string | null }) {
   );
 }
 export const terminalState = (state?: string) =>
-  ["succeeded", "failed", "cancelled", "completed", "partial"].includes(
+    ["succeeded", "failed", "cancelled", "expired", "completed", "partial"].includes(
     state ?? "",
   );
 export function errorCodeLabel(code: string) {

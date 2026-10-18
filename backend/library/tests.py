@@ -663,11 +663,12 @@ class ImportWorkflowTests(TestCase):
         force_credential_login(self.client, user)
 
     def imported(self, count=1):
-        from .importing import preview_import, start_import
+        from .importing import preview_import, start_import, import_plan
         from .worker import run_one
         html = '<!DOCTYPE NETSCAPE-Bookmark-file-1><DL>' + ''.join(
             f'<DT><A HREF="https://example.org/{i}">Website {i}</A>' for i in range(count)) + '</DL>'
-        batch = start_import(preview_import(html.encode()))
+        batch = preview_import(html.encode())
+        batch = start_import(batch, import_plan(batch)['confirmation_token'])
         run_one()
         batch.refresh_from_db()
         return batch
@@ -690,18 +691,27 @@ class ImportWorkflowTests(TestCase):
             return {"items": [{"bookmark_id": row["bookmark_id"], "target": {"parent_folder_id": None, "new_segments": ["Reviewed"]}, "reason": "test suggestion"} for row in rows]}
         return patch("library.classification.verified_client", return_value=(profile, SimpleNamespace(complete=complete)))
 
-    def test_upload_immediately_starts_and_duplicate_upload_key_is_idempotent(self):
+    def test_upload_only_previews_and_explicit_execute_is_idempotent(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
         html = b'<DL><A HREF="https://example.org/">Example</A><A HREF="https://example.org/">Duplicate</A><A HREF="file:///private">Invalid</A></DL>'
         def upload():
             return self.client.post("/api/v1/imports", {"file": SimpleUploadedFile("bookmarks.html", html)}, HTTP_IDEMPOTENCY_KEY="import-test")
         first, second = upload(), upload()
-        self.assertEqual(first.status_code, 202)
+        self.assertEqual(first.status_code, 201)
         self.assertEqual(second.json(), first.json())
         self.assertEqual(ImportBatch.objects.count(), 1)
-        self.assertEqual(Job.objects.filter(kind="import").count(), 1)
+        self.assertEqual(Job.objects.filter(kind="import").count(), 0)
         self.assertEqual(first.json()["data"]["duplicate"], 1)
         self.assertEqual(first.json()["data"]["invalid"], 1)
+        data = first.json()['data']
+        body = json.dumps({'confirmation_token': data['execution_plan']['confirmation_token']})
+        def execute():
+            return self.client.post(f"/api/v1/imports/{data['id']}/execute", body,
+                content_type='application/json', HTTP_IDEMPOTENCY_KEY='execute-test')
+        started, repeated = execute(), execute()
+        self.assertEqual(started.status_code, 202, started.content)
+        self.assertEqual(repeated.json(), started.json())
+        self.assertEqual(Job.objects.filter(kind='import').count(), 1)
 
     def test_records_do_not_report_completion_or_enqueue_metadata_or_ai(self):
         from .importing import serialize_import
@@ -819,8 +829,9 @@ class ImportWorkflowTests(TestCase):
         self.assertEqual(ClassificationProposal.objects.count(), 0)
 
     def test_cancel_queued_import_does_not_leave_a_permanent_progress_bar(self):
-        from .importing import preview_import, start_import
-        batch = start_import(preview_import(b'<DL><A HREF="https://example.org/">Example</A></DL>'))
+        from .importing import preview_import, start_import, import_plan
+        batch = preview_import(b'<DL><A HREF="https://example.org/">Example</A></DL>')
+        batch = start_import(batch, import_plan(batch)['confirmation_token'])
         job = Job.objects.get(kind="import")
         response = self.client.post(f"/api/v1/jobs/{job.id}/cancel", data="{}", content_type="application/json")
         self.assertEqual(response.status_code, 200)

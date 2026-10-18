@@ -19,7 +19,7 @@ from django.test import TransactionTestCase, override_settings
 
 from library.ai_transport import AIError, ChatClient, endpoint_fingerprint, strict_json
 from library.classification import accept_proposals, generate_proposals, test_profile, validate_result, verified_client
-from library.importing import parse_bookmark_html, preview_import, execute_import
+from library.importing import parse_bookmark_html, preview_import, execute_import, import_plan, start_import
 from runtime.maintenance import MaintenanceError, create_backup, validate_package
 
 
@@ -342,6 +342,107 @@ class PackageTests(unittest.TestCase):
             create_backup(self.generation, self.root / "bad2.zip")
         self.assertEqual(caught.exception.code, "BACKUP_SCHEMA_UNSAFE")
 
+    def rewrite_package_database(self, package, mutate):
+        """Construct hostile, correctly hashed packages independently of backup."""
+        create_backup(self.generation, package)
+        with zipfile.ZipFile(package) as archive:
+            content = {name: archive.read(name) for name in archive.namelist()}
+        database = self.root / "hostile.sqlite3"
+        database.write_bytes(content["library.sqlite3"])
+        with closing(sqlite3.connect(database)) as connection:
+            mutate(connection)
+            connection.commit()
+        content["library.sqlite3"] = database.read_bytes()
+        manifest = json.loads(content["manifest.json"])
+        manifest["files"]["library.sqlite3"] = {"size": len(content["library.sqlite3"]),
+            "sha256": hashlib.sha256(content["library.sqlite3"]).hexdigest()}
+        content["manifest.json"] = json.dumps(manifest).encode()
+        with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name, value in content.items():
+                archive.writestr(name, value)
+
+    def test_excessive_orphans_rejected_inside_worker_and_candidate_is_cleared(self):
+        from runtime.maintenance import MAX_ORPHAN_ARTIFACT_ROWS, MAX_DATABASE_BYTES
+        package = self.root / "many-orphans.zip"
+        # Use canonical artifact names; the rejection must be a row budget,
+        # not an invalid path or an oversized database/file manifest.
+        def valid_rows(connection):
+            def rows():
+                for number in range(MAX_ORPHAN_ARTIFACT_ROWS + 1):
+                    artifact_hash = f"{number:064x}"
+                    yield artifact_hash, f"artifacts/{artifact_hash[:2]}/{artifact_hash}.html", 0
+            connection.executemany("INSERT INTO library_artifact VALUES(?,?,?)", rows())
+        self.rewrite_package_database(package, valid_rows)
+        self.assertLess((self.root / "hostile.sqlite3").stat().st_size, MAX_DATABASE_BYTES)
+        candidate = self.root / "candidate"
+        with self.assertRaises(MaintenanceError) as caught:
+            validate_package(package, candidate, expected_schema=self.generation / "library.sqlite3")
+        self.assertEqual(caught.exception.code, "BACKUP_ROW_LIMIT")
+        self.assertFalse(any(candidate.iterdir()))
+
+    def test_folder_row_budget_rejects_before_materialization(self):
+        from runtime.maintenance import MAX_FOLDER_ROWS
+        package = self.root / "many-folders.zip"
+        self.rewrite_package_database(package, lambda connection: connection.executemany(
+            "INSERT INTO library_folder VALUES(?,NULL)", ((str(index),) for index in range(MAX_FOLDER_ROWS + 1))))
+        candidate = self.root / "candidate"
+        with self.assertRaises(MaintenanceError) as caught:
+            validate_package(package, candidate, expected_schema=self.generation / "library.sqlite3")
+        self.assertEqual(caught.exception.code, "BACKUP_ROW_LIMIT")
+        self.assertFalse(any(candidate.iterdir()))
+
+    def test_large_valid_catalogue_round_trip_keeps_full_library(self):
+        # Preserve useful large-library capacity instead of fixing the finding
+        # by imposing a tiny database or row-count limit.
+        self.connection.executemany("INSERT INTO library_bookmark VALUES(?,?)", (
+            (f"large-{index}", f"https://large.example/{index}") for index in range(100000)))
+        self.connection.executemany("INSERT INTO library_folder VALUES(?,NULL)", (
+            (str(index),) for index in range(100000)))
+        self.connection.commit()
+        package = self.root / "large-catalogue.zip"
+        create_backup(self.generation, package)
+        # Any accidental validation in the supervising process now fails.
+        with patch("runtime.maintenance._validate_database", side_effect=AssertionError("must run in child")):
+            manifest = validate_package(package, self.root / "candidate", expected_schema=self.generation / "library.sqlite3")
+        self.assertEqual(manifest["counts"]["bookmarks"], 100001)
+        self.assertEqual(manifest["counts"]["folders"], 100000)
+
+
+class RestoreResourceBoundaryTests(unittest.TestCase):
+    def test_os_memory_limit_rejects_real_allocation(self):
+        script = ("from runtime.maintenance_worker import apply_limits; "
+                  "apply_limits(memory_bytes=96*1024**2, cpu_seconds=5)\n"
+                  "try:\n bytearray(256*1024**2)\n"
+                  "except MemoryError:\n print('memory-limited', flush=True)\n")
+        child = subprocess.run([sys.executable, "-X", "utf8", "-c", script], capture_output=True, timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertEqual(child.stdout.strip(), b"memory-limited")
+
+    def test_os_cpu_limit_terminates_real_busy_child(self):
+        script = ("from runtime.maintenance_worker import apply_limits; "
+                  "apply_limits(memory_bytes=96*1024**2, cpu_seconds=1)\n"
+                  "print('limits-ready', flush=True)\nwhile True: pass\n")
+        child = subprocess.run([sys.executable, "-X", "utf8", "-c", script], capture_output=True, timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        self.assertNotEqual(child.returncode, 0)
+        self.assertEqual(child.stdout.strip(), b"limits-ready")
+
+    def test_wall_deadline_kills_owned_stalled_validator(self):
+        from runtime.maintenance import _isolated_validation
+        real_popen, children = subprocess.Popen, []
+        def stalled_validator(command, **options):
+            child = real_popen([sys.executable, "-c", "import time; time.sleep(30)"], **options)
+            children.append(child)
+            return child
+        with patch("runtime.maintenance.subprocess.Popen", side_effect=stalled_validator), \
+                patch("runtime.maintenance_worker.WALL_SECONDS", 0.05):
+            with self.assertRaises(MaintenanceError) as caught:
+                _isolated_validation("database", database="unused")
+        self.assertEqual(caught.exception.code, "RESTORE_RESOURCE_LIMIT")
+        self.assertEqual(len(children), 1)
+        self.assertIsNotNone(children[0].poll())
+
 
 class CatalogPortabilityTests(TransactionTestCase):
     databases = {"default", "library"}
@@ -358,6 +459,7 @@ class CatalogPortabilityTests(TransactionTestCase):
         existing, _ = create_bookmark({"url": "https://example.com", "notes": "do not change", "snapshot_enabled": False})
         batch = preview_import(CHROME_HTML)
         self.assertEqual((batch.duplicate, batch.invalid, batch.valid), (2, 1, 1))
+        start_import(batch, import_plan(batch)["confirmation_token"])
         execute_import(batch.id)
         existing.refresh_from_db()
         self.assertEqual(existing.notes, "do not change")
@@ -449,6 +551,7 @@ class CatalogPortabilityTests(TransactionTestCase):
     def test_cancelled_import_does_not_commit_next_entry(self):
         from library.models import Bookmark
         batch = preview_import(CHROME_HTML)
+        start_import(batch, import_plan(batch)["confirmation_token"])
         answers = iter([True, False])
         with self.assertRaises(Exception) as caught:
             execute_import(batch.id, execution_guard=lambda: next(answers))
@@ -564,6 +667,124 @@ class MaintenanceFailureTests(TransactionTestCase):
         with closing(sqlite3.connect(database)) as connection:
             state, active_key = connection.execute("SELECT state,active_key FROM library_job").fetchone()
         self.assertEqual((state, active_key), ("cancelled", None))
+
+    def test_failed_restore_validation_releases_upload_and_partial_candidate(self):
+        from runtime.maintenance import create_restore_validation, process_operation
+        operation = create_restore_validation(b"not a ZIP")
+        uploaded = Path(operation.source_package)
+        self.assertTrue(uploaded.is_file())
+        self.assertFalse(process_operation(operation.id, stop_services=lambda: None,
+            start_services=lambda: None, ready_services=lambda: True))
+        operation.refresh_from_db()
+        self.assertEqual(operation.state, "failed")
+        self.assertFalse(uploaded.exists())
+        self.assertFalse((self.root / "generations" / operation.target_generation).exists())
+        self.assertTrue((self.generation / "library.sqlite3").is_file())
+
+    def test_successful_preview_discards_upload_and_expiration_discards_candidate(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from runtime.maintenance import create_restore_validation, process_operation, cleanup_restore_data
+        from runtime.models import MaintenanceOperation
+        operation = create_restore_validation(self.package.read_bytes())
+        uploaded = Path(operation.source_package)
+        self.assertTrue(process_operation(operation.id, stop_services=lambda: None,
+            start_services=lambda: None, ready_services=lambda: True))
+        candidate = self.root / "generations" / operation.target_generation
+        self.assertFalse(uploaded.exists())
+        self.assertTrue((candidate / "library.sqlite3").is_file())
+        operation.refresh_from_db()
+        self.assertNotIn("files", operation.result["manifest"])
+        MaintenanceOperation.objects.using("default").filter(pk=operation.id).update(
+            validation_expires_at=timezone.now() - timedelta(seconds=1))
+        self.assertEqual(cleanup_restore_data()["expired"], 1)
+        operation.refresh_from_db()
+        self.assertEqual(operation.state, "expired")
+        self.assertFalse(candidate.exists())
+        self.assertTrue((self.generation / "library.sqlite3").is_file())
+
+    def test_cancel_preview_removes_staging_but_preserves_library_and_backups(self):
+        from runtime.maintenance import create_restore_validation, process_operation, cancel_restore
+        operation = create_restore_validation(self.package.read_bytes())
+        process_operation(operation.id, stop_services=lambda: None,
+            start_services=lambda: None, ready_services=lambda: True)
+        backup = self.root / "backups" / "user-backup.bookmarklib.zip"
+        backup.parent.mkdir(exist_ok=True)
+        backup.write_bytes(b"durable backup")
+        operation = cancel_restore(operation.id)
+        self.assertEqual(operation.state, "cancelled")
+        self.assertFalse((self.root / "generations" / operation.target_generation).exists())
+        self.assertTrue((self.generation / "library.sqlite3").is_file())
+        self.assertEqual(backup.read_bytes(), b"durable backup")
+
+    def test_successful_restore_retains_active_and_previous_generation(self):
+        from runtime.maintenance import process_operation, cleanup_restore_data
+        from runtime.models import RuntimeState
+        operation = self.prepared_restore()
+        self.assertTrue(process_operation(operation.id, stop_services=lambda: None,
+            start_services=lambda: None, ready_services=lambda: True))
+        self.assertEqual(RuntimeState.objects.using("default").get(pk=1).active_generation, operation.target_generation)
+        cleanup_restore_data()
+        self.assertTrue((self.root / "generations" / operation.target_generation / "library.sqlite3").is_file())
+        self.assertTrue((self.generation / "library.sqlite3").is_file())
+
+    def test_janitor_preserves_live_operation_and_failed_rollback_generations(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from runtime.maintenance import cleanup_restore_data
+        from runtime.models import MaintenanceOperation
+        old = timezone.now() - timedelta(days=2)
+        for state, stage in (("running", "validating_package"), ("failed", "rollback_failed")):
+            operation = MaintenanceOperation.objects.using("default").create(kind="restore", state=state,
+                stage=stage, old_generation="initial", target_generation="restore-" + uuid.uuid4().hex)
+            candidate = self.root / "generations" / operation.target_generation
+            candidate.mkdir()
+            (candidate / "library.sqlite3").write_bytes(b"protected")
+            os.utime(candidate, (old.timestamp(), old.timestamp()))
+            source = self.root / "work" / (str(operation.id) + ".bookmarklib.zip")
+            source.parent.mkdir(exist_ok=True)
+            source.write_bytes(b"protected upload")
+            os.utime(source, (old.timestamp(), old.timestamp()))
+            cleanup_restore_data()
+            self.assertTrue(candidate.exists())
+            if state == "running":
+                self.assertTrue(source.exists())
+        self.assertTrue((self.generation / "library.sqlite3").is_file())
+
+    def test_startup_reclaims_interrupted_upload_and_old_unowned_staging(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from runtime.maintenance import create_restore_validation, cleanup_restore_data
+        from runtime.models import MaintenanceOperation
+        operation = create_restore_validation(b"interrupted upload")
+        uploaded = Path(operation.source_package)
+        MaintenanceOperation.objects.using("default").filter(pk=operation.id).update(state="uploading")
+        unowned = self.root / "work" / (str(uuid.uuid4()) + ".bookmarklib.zip")
+        unowned.write_bytes(b"old orphan")
+        unowned_candidate = self.root / "generations" / ("restore-" + uuid.uuid4().hex)
+        unowned_candidate.mkdir()
+        (unowned_candidate / "partial").write_bytes(b"old orphan")
+        old = (timezone.now() - timedelta(hours=2)).timestamp()
+        os.utime(unowned, (old, old))
+        os.utime(unowned_candidate, (old, old))
+        cleanup_restore_data(startup=True)
+        operation.refresh_from_db()
+        self.assertEqual(operation.state, "failed")
+        self.assertFalse(uploaded.exists())
+        self.assertFalse(unowned.exists())
+        self.assertFalse(unowned_candidate.exists())
+
+    @unittest.skipUnless(os.name != "nt", "symlink creation requires Windows developer/admin privileges")
+    def test_janitor_never_traverses_staging_root_symlink(self):
+        from runtime.maintenance import cleanup_restore_data
+        outside = self.root / "outside"
+        outside.mkdir()
+        precious = outside / (str(uuid.uuid4()) + ".bookmarklib.zip")
+        precious.write_bytes(b"preserved")
+        (self.root / "work").symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(MaintenanceError):
+            cleanup_restore_data()
+        self.assertEqual(precious.read_bytes(), b"preserved")
 
 
 @override_settings(BOOKMARK_CAPTURE_MODE="development")

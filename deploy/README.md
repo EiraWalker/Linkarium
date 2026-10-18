@@ -19,7 +19,7 @@ GitHub Release 提供包含预构建前端的云服务器 deploy 包，服务器
 
 `-DevelopmentCapture` 明确启用本机开发采集：Chromium 直接在当前机器执行网站脚本，没有生产 launcher 的 namespace/cgroup/内核出网隔离，不作为公网部署安全验收。省略该参数则默认 isolated，缺少宿主 Linux capture launcher 时抓取明确失败，收藏整理、导入、AI、备份仍可运行。完整隔离部署使用 Linux 或 WSL2 Linux 环境，安装和验证步骤见 `deploy/capture/` 文档。
 
-Windows 的标准启动入口另支持 `-LanHttps` 和可选 `-NetworkAdapter`，详情见[局域网访问与本地 HTTPS](../docs/network-access.md)。该模式由同一 supervisor 管理 loopback Web、单 worker、HTTPS 代理和公开 CA 安装页，证书资料持久保存在数据目录的运行区。部署入口 `start-windows.ps1` 支持相同选项；`-SkipBuild` 时先单独准备 HTTPS 运行依赖。
+Windows 的标准启动入口另支持 `-LanHttps` 和可选 `-NetworkAdapter`，详情见[局域网访问与本地 HTTPS](../docs/network-access.md)。同一 supervisor 管理 loopback Web、单 worker、HTTPS 代理及仅服务器本机可访问的证书页。新设备通过独立可信渠道取得 CA 并核验终端指纹。部署入口 `start-windows.ps1` 支持相同选项；`-SkipBuild` 时先单独准备 HTTPS 运行依赖。
 
 ## Linux / Docker Compose
 
@@ -41,13 +41,13 @@ Windows 的标准启动入口另支持 `-LanHttps` 和可选 `-NetworkAdapter`�
 
 `deploy/nginx.conf.example` 提供独立 HTTPS Nginx server。先替换域名、证书和 upstream 地址，再用 `nginx -t` 验证，检查 `nginx -V` 中启用了 `--with-http_auth_request_module`（发行版也可能将模块单独提供，需要按该版本加载）。缺少该模块不能删掉上传鉴权指令后直接发布。
 
-默认请求体上限 1 MiB；只有精确路径 `/api/v1/imports/preview` 和 `/api/v1/restores/validate` 分别提高到 20 MiB、16 GiB。上传前，Nginx 的 `auth_request` 在 access phase 发内部 GET 到现有 `/api/v1/runtime/status`，保留原 session Cookie、不发送上传 body；未登录返回 401，固定 owner 返回 200，其他错误拒绝转发。鉴权成功后才以 HTTP/1.1 和 `proxy_request_buffering off` 向应用转发上传。应用仍执行 owner 与 CSRF 校验；代理门禁不代替这些检查。[Nginx auth_request](https://nginx.org/en/docs/http/ngx_http_auth_request_module.html)、[proxy_request_buffering](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_request_buffering)
+默认请求体上限 1 MiB。精确路径 `/api/v1/imports`、`/api/v1/imports/preview` 的 multipart 门禁为21 MiB（HTML文件仍最多20 MiB），`/api/v1/restores/validate` 为16 GiB。Nginx `auth_request` 在 access phase 以原 session Cookie、无body的内部GET验证owner，其他结果拒绝转发。应用仍执行owner和CSRF检查。[Nginx auth_request](https://nginx.org/en/docs/http/ngx_http_auth_request_module.html)
 
-这是对 Waitress 在进入 Django 前缓冲请求体的补充：匿名访客不能通过这两个大上传入口先向应用临时目录写入整个 body。16 GiB 是单请求初始上限；认证用户上传仍受实际可用磁盘和包校验限制，multipart 边界也计入 Nginx 请求体大小。上传 URL 按上述精确路径使用，带额外路径/尾斜杠会落到默认 1 MiB 配置。Nginx 示例不代表请求全程零内存或零磁盘缓冲。
+所有内置HTTP、LAN HTTPS和代理入口还共享Waitress请求头门禁：普通body最多1 MiB；大上传先以owner和CSRF调用 `/api/v1/runtime/uploads`，将一次性返回值放入 `X-Linkarium-Upload`。额度绑定路径、字节数、120秒开始期限及单个并发，先预留磁盘；断线和最多1小时总时限释放。Nginx门禁是附加防护，不代替该授权。multipart边界计入上限；不承诺零内存或零磁盘缓冲。
 
 公开 HTTPS 时配置 `BOOKMARK_PASSKEY_ORIGIN=https://你的域名`、`BOOKMARK_HTTPS=1`、准确的 `BOOKMARK_ALLOWED_HOSTS`、完整的 `BOOKMARK_CSRF_ORIGINS=https://你的域名`，同时设置 `BOOKMARK_TRUST_PROXY=1` 与 `BOOKMARK_PROXY_PEER=实际代理TCP来源IP`。允许主机需保留用于容器内部健康检查的 `127.0.0.1`。Passkey 来源必须与用户浏览器地址一致；链接生成不会信任客户端 Host。Waitress 只信任这一个精确 IP 的 X-Forwarded-For / X-Forwarded-Proto；Nginx 用 `$remote_addr` 覆盖传入 X-Forwarded-For，并清空其他 forwarding headers，不追加客户端声明的链。原生 Nginx 到原生 loopback 服务通常是 `127.0.0.1`；宿主 Nginx 到 Docker 发布端口可能在容器中表现为 bridge gateway IP，必须在受控访问测试中确认应用看到的 TCP peer，再填写，不能直接照抄 127。多层代理/CDN 不在此单代理示例的信任范围内。
 
-该配置已实际运行 `nginx -t`，并通过匿名/登录 2 MiB 上传、chunked 上传、CSRF、代理来源、HTTPS cookie 和非默认 HTTPS 端口的测试，具体见 [Docker 部署验收](../docs/docker-deployment-acceptance.md)。普通、导入、恢复请求的超限声明长度均验证返回 413；未执行 16 GiB 实际恢复。直连 Waitress 的本机开发入口没有这层上传前鉴权门禁，公网入口须通过已验收的代理。
+历史Docker/Nginx验收范围见 [Docker 部署验收](../docs/docker-deployment-acceptance.md)。新增源码门禁使用真实Waitress socket验证声明长度、Expect、chunked、票据重放、断线和慢速上传；16 GiB以请求头拒绝边界验证，未实际发送16 GiB文件。公网仍需部署可信TLS代理并验证实际配置。
 
 应用容器非 root，丢弃 Linux capabilities，不挂 Docker socket。宿主 launcher 是独立的受控组件；启动 Compose 并不证明采集隔离已通过。Docker 与 Linux launcher 的运行验收结果须以本机实际测试报告为准。
 

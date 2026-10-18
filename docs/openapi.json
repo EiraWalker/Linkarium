@@ -2317,6 +2317,147 @@
         "parameters": []
       }
     },
+    "/runtime/uploads": {
+      "post": {
+        "operationId": "post_runtime_uploads",
+        "tags": [
+          "runtime"
+        ],
+        "security": [
+          {
+            "ownerSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; see docs/api-contract.md for entity fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted; business job/group ID or runtime operation ID"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadAdmission"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRFToken",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Masked csrf_token returned by GET /session; rotate after login"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
+          }
+        ]
+      }
+    },
     "/bookmarks": {
       "get": {
         "operationId": "get_bookmarks",
@@ -8092,6 +8233,15 @@
               "type": "string",
               "maxLength": 128
             }
+          },
+          {
+            "name": "X-Linkarium-Upload",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "One-use owner-issued admission required before a body above 1 MiB is accepted. Obtain from POST /runtime/uploads."
           }
         ]
       }
@@ -8242,6 +8392,15 @@
               "type": "string",
               "maxLength": 128
             }
+          },
+          {
+            "name": "X-Linkarium-Upload",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "One-use owner-issued admission required before a body above 1 MiB is accepted. Obtain from POST /runtime/uploads."
           }
         ]
       }
@@ -8476,7 +8635,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object"
+                "$ref": "#/components/schemas/ImportConfirmation"
               }
             }
           }
@@ -9182,6 +9341,15 @@
               "type": "string",
               "maxLength": 128
             }
+          },
+          {
+            "name": "X-Linkarium-Upload",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "One-use owner-issued admission required before a body above 1 MiB is accepted. Obtain from POST /runtime/uploads."
           }
         ]
       }
@@ -9564,6 +9732,156 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/restores/{id}/cancel": {
+      "post": {
+        "operationId": "post_restores_id_cancel",
+        "tags": [
+          "restores"
+        ],
+        "security": [
+          {
+            "ownerSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; see docs/api-contract.md for entity fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted; business job/group ID or runtime operation ID"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-CSRFToken",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Masked csrf_token returned by GET /session; rotate after login"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
             }
           }
         ]
@@ -10118,6 +10436,39 @@
       }
     },
     "schemas": {
+      "UploadAdmission": {
+        "type": "object",
+        "required": [
+          "path",
+          "size"
+        ],
+        "properties": {
+          "path": {
+            "enum": [
+              "/api/v1/imports",
+              "/api/v1/imports/preview",
+              "/api/v1/restores/validate"
+            ]
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 17179869184
+          }
+        }
+      },
+      "ImportConfirmation": {
+        "type": "object",
+        "required": [
+          "confirmation_token"
+        ],
+        "properties": {
+          "confirmation_token": {
+            "type": "string",
+            "description": "Signed exact preview, workload and library epoch; valid 15 minutes"
+          }
+        }
+      },
       "Envelope": {
         "type": "object",
         "required": [
@@ -10419,7 +10770,7 @@
         }
       },
       "PasskeyRegistrationOptions": {
-        "description": "Choose exactly one authority: local credential session, terminal initialization code, or enrollment token plus independent code. Explicit authority never falls back to the existing session.",
+        "description": "Choose a local credential session or a secret enrollment token plus independent code, including first initialization. Code-only first registration is rejected. Explicit authority never falls back to the existing session.",
         "oneOf": [
           {
             "allOf": [
@@ -10458,46 +10809,6 @@
                 }
               }
             ]
-          },
-          {
-            "type": "object",
-            "required": [
-              "name",
-              "bootstrap_code"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "name": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100
-              },
-              "bootstrap_code": {
-                "type": "string",
-                "pattern": "^[0-9]{8}$",
-                "writeOnly": true
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "name",
-              "first_passkey_code"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "name": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100
-              },
-              "first_passkey_code": {
-                "type": "string",
-                "pattern": "^[0-9]{8}$",
-                "writeOnly": true
-              }
-            }
           },
           {
             "type": "object",

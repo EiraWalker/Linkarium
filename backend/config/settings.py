@@ -16,6 +16,7 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "config.middleware.CredentialSessionMiddleware",
+    "config.middleware.AuthenticationChallengeMiddleware",
     "axes.middleware.AxesMiddleware",
     "config.middleware.ResponsePolicyMiddleware",
 ]

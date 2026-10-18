@@ -79,7 +79,7 @@ def _issue(purpose, origin, rp_id, user, issuer_kind, issuer_id, name):
         EnrollmentGrant.objects.filter(active_slot="first_passkey").update(active_slot=None, invalidated_at=now)
     token, code = secrets.token_urlsafe(32), f"{secrets.randbelow(100000000):08d}"
     if purpose in INITIAL_PASSKEY_PURPOSES:
-        # These codes have no URL token: a repeated number would revive an old code.
+        # Keep the console's existing promise that reissued codes differ.
         previous_grants = list(EnrollmentGrant.objects.filter(purpose__in=INITIAL_PASSKEY_PURPOSES).only("id", "purpose", "code_hash"))
         while any(hmac.compare_digest(previous.code_hash, _digest_code(previous, code)) for previous in previous_grants):
             code = f"{secrets.randbelow(100000000):08d}"
@@ -90,8 +90,8 @@ def _issue(purpose, origin, rp_id, user, issuer_kind, issuer_id, name):
         expires_at=None if purpose in INITIAL_PASSKEY_PURPOSES else now + timedelta(minutes=5 if purpose == "add_device" else 10))
     grant.code_hash = _digest_code(grant, code)
     grant.save()
-    fragment = "reset" if purpose == "reset" else "enroll"
-    result = {"enrollment_url": f"{origin}/login" + ("" if purpose in INITIAL_PASSKEY_PURPOSES else f"#{fragment}={token}"),
+    fragment = "initialize" if purpose in INITIAL_PASSKEY_PURPOSES else "reset" if purpose == "reset" else "enroll"
+    result = {"enrollment_url": f"{origin}/login#{fragment}={token}",
         "authorization_code": code, "expires_at": grant.expires_at.isoformat() if grant.expires_at else None}
     if purpose == "bootstrap":
         result["initialization_code"] = code
@@ -157,28 +157,21 @@ def authorize_registration(data, origin):
     """Returns a grant or None for local enrollment; failed guesses commit before raising."""
     if "setup_token" in data:
         raise ApiError("AUTH_GRANT_INVALID", "旧绑定链接已停用，请重新获取链接和授权码", 403)
-    bootstrap = "bootstrap_code" in data
-    first_passkey = "first_passkey_code" in data
     linked = "enrollment_token" in data or "authorization_code" in data
-    if sum((bootstrap, first_passkey, linked)) > 1:
-        raise ApiError("AUTH_GRANT_INVALID", "请只使用一种注册授权", 400)
-    if not bootstrap and not first_passkey and not linked:
+    if "bootstrap_code" in data or "first_passkey_code" in data:
+        # A short code must never select a shared bootstrap slot: anonymous
+        # guesses could otherwise lock out its real holder. The fragment token
+        # is required for every console-issued grant, even its first attempt.
+        raise ApiError("AUTH_GRANT_INVALID", "请打开服务器终端提供的完整链接并输入授权码", 400)
+    if not linked:
         return None
-    code = data.get("bootstrap_code") if bootstrap else data.get("first_passkey_code") if first_passkey else data.get("authorization_code")
+    code = data.get("authorization_code")
     token = data.get("enrollment_token")
+    if not isinstance(token, str) or not 32 <= len(token) <= 100:
+        raise ApiError("AUTH_GRANT_INVALID", "授权无效，请重新获取", 403)
     failure = None
     with transaction.atomic(using="default"):
-        if bootstrap:
-            if owner_exists():
-                raise ApiError("AUTH_ALREADY_INITIALIZED", "收藏库已初始化，请登录", 409)
-            grant = EnrollmentGrant.objects.filter(active_slot="bootstrap").first()
-        elif first_passkey:
-            grant = EnrollmentGrant.objects.filter(active_slot="first_passkey").first()
-        else:
-            if not isinstance(token, str) or not 32 <= len(token) <= 100:
-                raise ApiError("AUTH_GRANT_INVALID", "授权无效，请重新获取", 403)
-            grant = EnrollmentGrant.objects.filter(token_hash=hashlib.sha256(token.encode()).hexdigest(),
-                purpose__in=("add_device", "reset")).first()
+        grant = EnrollmentGrant.objects.filter(token_hash=hashlib.sha256(token.encode()).hexdigest()).first()
         validate_grant(grant, origin)
         if not isinstance(code, str) or not hmac.compare_digest(_digest_code(grant, code), grant.code_hash):
             grant.failed_attempts += 1

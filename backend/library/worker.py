@@ -82,12 +82,14 @@ def publish_snapshot(job, attempt, result):
     destination = artifact_path(digest, relative, job.generation)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(f".{attempt.id}.tmp")
-    with performance.span("snapshot.copy", category="worker"):
-        with source.open("rb") as incoming, temporary.open("xb") as outgoing:
-            shutil.copyfileobj(incoming, outgoing)
-            outgoing.flush()
-            os.fsync(outgoing.fileno())
+    owns_temporary = False
     try:
+        with performance.span("snapshot.copy", category="worker"):
+            with source.open("rb") as incoming, temporary.open("xb") as outgoing:
+                owns_temporary = True
+                shutil.copyfileobj(incoming, outgoing)
+                outgoing.flush()
+                os.fsync(outgoing.fileno())
         with transaction.atomic(using="library"):
             if not queue.execution_valid(job, attempt):
                 raise ApiError("ATTEMPT_EXPIRED", "任务已取消或失效", 409)
@@ -127,7 +129,8 @@ def publish_snapshot(job, attempt, result):
             queue.finish(job, attempt, {"version_id": str(version.id)})
             return version
     finally:
-        temporary.unlink(missing_ok=True)
+        if owns_temporary:
+            temporary.unlink(missing_ok=True)
 
 
 def cleanup_artifacts():
@@ -210,8 +213,12 @@ def run_one(prefer_background=False):
                         publish_metadata(job, attempt, result)
             elif job.kind == "classification":
                 from .classification import generate_proposals
+                from .ai_transport import request_budget
+                from .importing import reserve_ai_request
+                import_id = job.payload.get('import_id')
                 with performance.span("worker.classification", category="worker", count=len(job.payload["bookmark_ids"])):
-                    result = generate_proposals(job.payload["bookmark_ids"], job.payload.get("profile_id"), execution_guard=lambda: queue.execution_valid(job, attempt), job_group_id=job.payload.get("group_id"))
+                    with request_budget((lambda: reserve_ai_request(import_id)) if import_id else None):
+                        result = generate_proposals(job.payload["bookmark_ids"], job.payload.get("profile_id"), execution_guard=lambda: queue.execution_valid(job, attempt), job_group_id=job.payload.get("group_id"))
                 queue.finish(job, attempt, {"proposal_count": result.get("count", 0) if isinstance(result, dict) else len(result)})
             elif job.kind == "import":
                 from .importing import execute_import
@@ -239,11 +246,15 @@ def run_one(prefer_background=False):
         finally:
             stopped.set()
             thread.join(timeout=2)
-            if job.kind in ("capture", "metadata") and settings.BOOKMARK_CAPTURE_MODE == "development":
+            if job.kind in ("capture", "metadata"):
                 try:
                     with performance.span("worker.cleanup_capture_work", category="worker"):
-                        cleanup_capture_work(attempt)
-                except OSError:
+                        if settings.BOOKMARK_CAPTURE_MODE == "development":
+                            cleanup_capture_work(attempt)
+                        else:
+                            from capture import LauncherClient
+                            LauncherClient(settings.BOOKMARK_CAPTURE_SOCKET).release(str(attempt.id), job.generation, job.library_epoch)
+                except Exception:
                     print(f"job={job.id} staging_cleanup_deferred", flush=True)
             with performance.span("worker.advance_imports", category="worker"):
                 advance_imports()
@@ -260,7 +271,7 @@ def recover_expired():
             from capture import LauncherClient
             # A failed cancellation must block reassignment of this attempt.
             try:
-                LauncherClient(settings.BOOKMARK_CAPTURE_SOCKET).cancel(str(attempt.id), job.generation, job.library_epoch)
+                LauncherClient(settings.BOOKMARK_CAPTURE_SOCKET).release(str(attempt.id), job.generation, job.library_epoch)
             except Exception:
                 continue
         queue.finish(job, attempt, error_code="LEASE_EXPIRED", retryable=True, allow_expired=True)

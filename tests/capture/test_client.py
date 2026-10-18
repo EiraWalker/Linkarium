@@ -24,10 +24,11 @@ class ClientSpoolContractTests(unittest.TestCase):
 
             def fake_launcher(message):
                 observed['message'] = message
-                folder = client.spool_path / attempt
+                folder = client.spool_path / 'incoming' / attempt
                 observed['request'] = json.loads((folder / 'request.json').read_text())
-                (folder / 'output').mkdir()
-                (folder / 'output' / (digest + '.html')).write_bytes(payload)
+                output = client.spool_path / 'results' / attempt
+                output.mkdir(parents=True)
+                (output / (digest + '.html')).write_bytes(payload)
                 return {'ok': True, 'result': {
                     'artifact_path': '/output/' + digest + '.html', 'title':'Example', 'description':'',
                     'text_excerpt':'Example', 'final_url':'https://example.com/', 'viewport_width':1366,
@@ -38,7 +39,7 @@ class ClientSpoolContractTests(unittest.TestCase):
             self.assertFalse(forbidden.exists())
             self.assertNotIn('output_dir', observed['request'])
             self.assertEqual(set(observed['message']), {'action','attempt_uuid','generation','library_epoch'})
-            self.assertEqual(Path(result.artifact_path), client.spool_path / attempt / 'output' / (digest + '.html'))
+            self.assertEqual(Path(result.artifact_path), client.spool_path / 'results' / attempt / (digest + '.html'))
 
     def test_default_spool_respects_supervisor_environment(self):
         with patch.dict(os.environ, {'BOOKMARK_CAPTURE_SPOOL':'/configured-shared-spool'}):

@@ -12,7 +12,6 @@ from django.contrib.auth import get_user_model, logout
 from django.contrib.auth.backends import BaseBackend
 from django.contrib.sessions.models import Session
 from django.db import IntegrityError, transaction
-from django.db.models import Q
 from django.utils import timezone
 from webauthn import (generate_registration_options, generate_authentication_options,
     verify_registration_response, verify_authentication_response, options_to_json, base64url_to_bytes)
@@ -24,6 +23,7 @@ from library.errors import ApiError
 from .auth_grants import (authorize_registration, credential_exists, get_auth_state,
     issue_device_grant, owner_exists, validate_grant)
 from .auth_sessions import establish_session, require_credential_session, validate_session
+from .auth_challenges import browser_binding, limit_authentication_request, reserve_challenge
 from .models import EnrollmentGrant, PasskeyCredential, PasskeyChallenge, FileKeyCredential
 
 
@@ -96,12 +96,6 @@ def passkey_availability(request):
         return {"passkey_origin": origin, "passkey_available": normalize_origin(actual, allow_ip=True)[0] == origin}
     except ValueError:
         return {"passkey_origin": None, "passkey_available": False}
-
-
-def _session_hash(request):
-    if not request.session.session_key:
-        request.session.create()
-    return hashlib.sha256(request.session.session_key.encode()).hexdigest()
 
 
 def can_add_passkey(request):
@@ -186,17 +180,12 @@ def manage_passkey(request, credential_id, method, data):
     raise ApiError("METHOD_NOT_ALLOWED", "请求方法不受支持", 405)
 
 
-def _cleanup_challenges():
-    now = timezone.now()
-    PasskeyChallenge.objects.filter(Q(completed_at__lt=now - timedelta(minutes=10)) |
-        (Q(completed_at__isnull=True) & Q(expires_at__lte=now))).delete()
-
-
 def _options(request, purpose, data):
     origin, rp_id = request_origin(request)
+    limit_authentication_request(request, options=True)
     grant = authorize_registration(data, origin) if purpose == "register" else None
     mode, name, issuer_kind, issuer_id = "", "Passkey", "", None
-    session_hash = _session_hash(request)
+    session_hash = browser_binding(request, create=True)
     with transaction.atomic(using="default"):
         state = get_auth_state()
         user = get_user_model().objects.filter(username=settings.BOOKMARK_OWNER, is_active=True).first()
@@ -224,7 +213,7 @@ def _options(request, purpose, data):
                 raise ApiError("PASSKEY_NOT_CONFIGURED", "尚无可用 Passkey，请使用其他登录方式或终端授权", 409)
             options = generate_authentication_options(rp_id=rp_id, allow_credentials=descriptors,
                 user_verification=UserVerificationRequirement.REQUIRED, timeout=120000)
-        _cleanup_challenges()
+        reserve_challenge(session_hash)
         expires = timezone.now() + timedelta(minutes=3)
         if grant and grant.expires_at is not None:
             expires = min(expires, grant.expires_at)
@@ -241,7 +230,7 @@ def _claim_challenge(request, purpose, data):
     if not isinstance(credential, dict):
         raise ApiError("PASSKEY_INVALID", "Passkey 认证数据无效", 400)
     digest = hashlib.sha256(json.dumps(credential, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    current_hash = _session_hash(request)
+    current_hash = browser_binding(request)
     with transaction.atomic(using="default"):
         challenge = PasskeyChallenge.objects.filter(pk=_id(data.get("challenge_id")), purpose=purpose, origin=origin).first()
         if challenge and purpose == "register" and challenge.state == "completed":
@@ -346,6 +335,8 @@ def passkey_request(request, action, data):
         return _options(request, "register" if action.startswith("register/") else "login", data)
     if action not in ("register/verify", "login/verify"):
         raise ApiError("NOT_FOUND", "操作不存在", 404)
+    request_origin(request)
+    limit_authentication_request(request, options=False)
     purpose = "register" if action.startswith("register/") else "login"
     challenge, credential, completed = _claim_challenge(request, purpose, data)
     if completed:
@@ -385,13 +376,14 @@ def file_key_request(request, action, data):
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     from cryptography.exceptions import InvalidSignature
     origin, rp_id = request_origin(request, allow_ip=True)
+    limit_authentication_request(request, options=action == "options")
     if action == "options":
         if not FileKeyCredential.objects.filter(user__username=settings.BOOKMARK_OWNER, user__is_active=True).exists():
             raise ApiError("KEY_NOT_CONFIGURED", "尚未配置私钥文件登录", 409)
         now = timezone.now()
-        session_hash = _session_hash(request)
+        session_hash = browser_binding(request, create=True)
         with transaction.atomic(using="default"):
-            _cleanup_challenges()
+            reserve_challenge(session_hash)
             challenge = PasskeyChallenge.objects.create(session_hash=session_hash, purpose="file_key", origin=origin,
                 rp_id=rp_id, credential_epoch=get_auth_state().credential_epoch,
                 challenge=secrets.token_urlsafe(32), expires_at=now + timedelta(minutes=3))
@@ -399,7 +391,7 @@ def file_key_request(request, action, data):
         return {"challenge_id": str(challenge.id), "message": message}
     if action != "verify":
         raise ApiError("NOT_FOUND", "操作不存在", 404)
-    session_hash = _session_hash(request)
+    session_hash = browser_binding(request)
     with transaction.atomic(using="default"):
         challenge = PasskeyChallenge.objects.filter(pk=_id(data.get("challenge_id")), purpose="file_key", state="pending",
             session_hash=session_hash, origin=origin, expires_at__gt=timezone.now()).first()

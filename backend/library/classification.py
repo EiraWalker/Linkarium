@@ -404,11 +404,19 @@ def serialize_profile(profile):
     from runtime.models import ProviderSecret, RuntimeState
     secret = ProviderSecret.objects.using("default").filter(profile_id=profile.id).first()
     epoch = RuntimeState.objects.using("default").get(pk=1).library_epoch
+    endpoint_error = ""
+    try:
+        fingerprint = endpoint_fingerprint(profile.base_url, profile.protocol)
+    except AIError as error:
+        # Old libraries can contain endpoints forbidden by the current policy.
+        # Keep them editable without treating the retained key as usable.
+        fingerprint, endpoint_error = None, error.code
     verified = bool(secret and secret.verified and secret.verified_library_epoch == epoch and
-                    secret.endpoint_fingerprint == endpoint_fingerprint(profile.base_url, profile.protocol))
+                    fingerprint is not None and secret.endpoint_fingerprint == fingerprint)
     return {"id": str(profile.id), "name": profile.name, "base_url": profile.base_url,
             "model": profile.model, "protocol": profile.protocol, "output_mode": profile.output_mode,
             "enabled": profile.enabled, "revision": profile.revision,
+            "endpoint_error_code": endpoint_error,
             "has_api_key": bool(secret and secret.api_key), "verified": verified,
             "key_configured": bool(secret and secret.api_key), "key_verified": verified,
-            "binding_matches": bool(secret and secret.endpoint_fingerprint == endpoint_fingerprint(profile.base_url, profile.protocol))}
+            "binding_matches": bool(secret and fingerprint is not None and secret.endpoint_fingerprint == fingerprint)}

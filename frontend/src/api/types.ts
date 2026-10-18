@@ -131,6 +131,7 @@ export interface Profile extends Entity {
   key_configured: boolean;
   key_verified: boolean;
   binding_matches: boolean;
+  endpoint_error_code?: string;
 }
 export interface Proposal extends Entity {
   manual?: boolean;
@@ -221,6 +222,13 @@ export interface Operation {
   download_url?: string;
 }
 export interface ImportBatch {
+  execution_plan?: {
+    captures: number;
+    ai_requests: number;
+    can_execute: boolean;
+    entry_limit: number;
+    confirmation_token: string;
+  };
   id: string;
   state: string;
   total: number;

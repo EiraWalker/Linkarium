@@ -9,7 +9,7 @@ routes = {
     "/session/key/options": ["post"], "/session/key/verify": ["post"],
     "/session/passkey/grants": ["post"], "/session/passkeys": ["get"],
     "/session/passkeys/{id}": ["patch", "delete"],
-    "/settings": ["get", "patch"], "/capture-network": ["get", "patch"], "/runtime/status": ["get"],
+    "/settings": ["get", "patch"], "/capture-network": ["get", "patch"], "/runtime/status": ["get"], "/runtime/uploads": ["post"],
     "/bookmarks": ["get", "post"], "/bookmarks/{id}": ["get", "patch"],
     "/bookmarks/delete-preview": ["post"], "/bookmarks/bulk": ["post"],
     "/bookmarks/{id}/refresh": ["post"], "/bookmarks/{id}/snapshots": ["get"],
@@ -24,7 +24,7 @@ routes = {
     "/imports": ["get", "post"], "/imports/preview": ["post"], "/imports/{id}": ["get"], "/imports/{id}/execute": ["post"], "/imports/{id}/review-notified": ["post"],
     "/backups": ["post"], "/backups/{id}": ["get"], "/backups/{id}/download": ["get"],
     "/restores/validate": ["post"], "/restores/{id}": ["get"], "/restores/{id}/execute": ["post"],
-    "/restores/{id}/pre-backup/download": ["get"],
+    "/restores/{id}/pre-backup/download": ["get"], "/restores/{id}/cancel": ["post"],
     "/maintenance-operations/{id}": ["get"], "/maintenance-operations/lookup": ["post"],
     "/data/clear": ["post"], "/data/reset": ["post"],
 }
@@ -35,6 +35,11 @@ fields = {
     "refresh_interval_seconds": {"type": ["integer", "null"], "minimum": 3600, "maximum": 31536000},
 }
 schemas = {
+    "UploadAdmission": {"type": "object", "required": ["path", "size"], "properties": {
+        "path": {"enum": ["/api/v1/imports", "/api/v1/imports/preview", "/api/v1/restores/validate"]},
+        "size": {"type": "integer", "minimum": 1, "maximum": 17179869184}}},
+    "ImportConfirmation": {"type": "object", "required": ["confirmation_token"], "properties": {
+        "confirmation_token": {"type": "string", "description": "Signed exact preview, workload and library epoch; valid 15 minutes"}}},
     "Envelope": {"type": "object", "required": ["data"], "properties": {"data": {}, "page": {"type": "object", "properties": {"number": {"type": "integer"}, "size": {"type": "integer"}, "total": {"type": "integer"}}}}},
     "Error": {"type": "object", "required": ["error"], "properties": {"error": {"type": "object", "required": ["code", "message", "request_id"], "properties": {"code": {"type": "string"}, "message": {"type": "string"}, "request_id": {"type": "string"}, "field_errors": {"type": "object"}, "details": {}}}}},
     "BookmarkWrite": {"type": "object", "properties": fields},
@@ -50,12 +55,8 @@ schemas = {
 paths = {}
 schemas["PasskeyName"] = {"type": "object", "required": ["name"], "properties": {
     "name": {"type": "string", "minLength": 1, "maxLength": 100}}}
-schemas["PasskeyRegistrationOptions"] = {"description": "Choose exactly one authority: local credential session, terminal initialization code, or enrollment token plus independent code. Explicit authority never falls back to the existing session.", "oneOf": [
+schemas["PasskeyRegistrationOptions"] = {"description": "Choose a local credential session or a secret enrollment token plus independent code, including first initialization. Code-only first registration is rejected. Explicit authority never falls back to the existing session.", "oneOf": [
     {"allOf": [{"$ref": "#/components/schemas/PasskeyName"}, {"not": {"anyOf": [{"required": [key]} for key in ("bootstrap_code", "first_passkey_code", "enrollment_token", "authorization_code", "setup_token")]}}]},
-    {"type": "object", "required": ["name", "bootstrap_code"], "additionalProperties": False, "properties": {
-        "name": schemas["PasskeyName"]["properties"]["name"], "bootstrap_code": {"type": "string", "pattern": "^[0-9]{8}$", "writeOnly": True}}},
-    {"type": "object", "required": ["name", "first_passkey_code"], "additionalProperties": False, "properties": {
-        "name": schemas["PasskeyName"]["properties"]["name"], "first_passkey_code": {"type": "string", "pattern": "^[0-9]{8}$", "writeOnly": True}}},
     {"type": "object", "required": ["name", "enrollment_token", "authorization_code"], "additionalProperties": False, "properties": {
         "name": schemas["PasskeyName"]["properties"]["name"], "enrollment_token": {"type": "string", "writeOnly": True},
         "authorization_code": {"type": "string", "pattern": "^[0-9]{8}$", "writeOnly": True}}},
@@ -90,6 +91,10 @@ for route, methods in routes.items():
                 name = "ClassificationReview"
             if route == "/capture-network":
                 name = "CaptureNetworkWrite"
+            if route == "/runtime/uploads":
+                name = "UploadAdmission"
+            if route == "/imports/{id}/execute":
+                name = "ImportConfirmation"
             if route in ("/data/clear", "/data/reset"):
                 name = "ClearDataConfirmation" if route == "/data/clear" else "ResetDataConfirmation"
             if route == "/session/passkey/register/options":
@@ -102,6 +107,8 @@ for route, methods in routes.items():
                 name = "PasskeyName"
             content = {"application/json": {"schema": {"$ref": f"#/components/schemas/{name}"} if name else {"type": "object"}}}
             if route in ("/imports", "/imports/preview", "/restores/validate"):
+                parameters.append({"name": "X-Linkarium-Upload", "in": "header", "required": False,
+                    "schema": {"type": "string"}, "description": "One-use owner-issued admission required before a body above 1 MiB is accepted. Obtain from POST /runtime/uploads."})
                 content = {"multipart/form-data": {"schema": {"type": "object", "required": ["file"], "properties": {"file": {"type": "string", "format": "binary"}}}}}
             entry["requestBody"] = {"required": True, "content": content}
             entry["responses"]["202"] = {"description": "Accepted; business job/group ID or runtime operation ID"}

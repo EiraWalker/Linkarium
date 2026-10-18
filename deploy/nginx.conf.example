@@ -53,13 +53,19 @@ server {
     }
 
     location = /api/v1/imports/preview {
-        client_max_body_size 20m;
+        client_max_body_size 21m;
         auth_request /__bookmark_upload_auth;
         proxy_pass http://127.0.0.1:8000;
     }
 
     location = /api/v1/restores/validate {
         client_max_body_size 16g;
+        auth_request /__bookmark_upload_auth;
+        proxy_pass http://127.0.0.1:8000;
+    }
+
+    location = /api/v1/imports {
+        client_max_body_size 21m;
         auth_request /__bookmark_upload_auth;
         proxy_pass http://127.0.0.1:8000;
     }

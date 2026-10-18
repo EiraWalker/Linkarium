@@ -117,8 +117,6 @@ def _run_child(scenario):
         return signer
 
     def grant_payload(grant):
-        if "initialization_code" in grant:
-            return {"bootstrap_code": grant["initialization_code"], "name": "首把 Passkey"}
         return {"enrollment_token": grant["enrollment_url"].split("=", 1)[1],
             "authorization_code": grant["authorization_code"], "name": "设备 Passkey"}
 

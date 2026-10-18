@@ -187,9 +187,9 @@ class BoundedHeaderReader:
 
 
 class PinnedPublicProxy:
-    def __init__(self, resolver, max_bytes, deadline, deny_hosts=(), connector=None):
+    def __init__(self, resolver, max_bytes, deadline, deny_hosts=(), connector=None, allow_test_hosts=()):
         self.resolver = resolver
-        self.policy = PublicURLPolicy(deny_hosts=deny_hosts, resolver=resolver)
+        self.policy = PublicURLPolicy(allow_test_hosts=allow_test_hosts, deny_hosts=deny_hosts, resolver=resolver)
         self.max_bytes = max_bytes
         self.deadline = deadline
         self.connector = connector or socket.create_connection
@@ -230,8 +230,6 @@ class PinnedPublicProxy:
         addresses = self.policy.resolve(url)
         target = urlsplit(url)
         port = target.port or (443 if target.scheme == 'https' else 80)
-        if any(address.version != 4 for address in addresses):
-            raise CaptureError('ipv6_unsupported', 'Public DoH capture currently supports IPv4 targets only')
         self.budget()
         # Only validated literal addresses reach connect(). No hostname is delegated to
         # an OS resolver, and no DIRECT/system-DNS fallback is attempted.

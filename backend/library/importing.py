@@ -2,11 +2,68 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 from html.parser import HTMLParser
 from urllib.parse import urlsplit, urlunsplit
 
 MAX_IMPORT_BYTES = 20 * 1024 * 1024
 MAX_ENTRIES = 100000
+MAX_EXECUTION_ENTRIES = 1000
+MAX_CAPTURE_JOBS = 2000
+MAX_AI_REQUESTS = 101  # One shared taxonomy request plus 100 ten-site batches.
+
+
+def _ai_budget(count):
+    return (count + 9) // 10 + bool(count)
+
+
+def reserve_ai_request(batch_id):
+    from django.core import signing
+    from django.db.models import F
+    from .models import ImportBatch
+    from .ai_transport import AIError
+    from . import queue
+    batch = ImportBatch.objects.using('library').filter(pk=batch_id).first()
+    try:
+        authorization = signing.loads(batch.execution_authorization, salt='import-execution-v1') if batch else {}
+    except (signing.BadSignature, TypeError):
+        authorization = {}
+    if (not batch or authorization.get('batch_id') != str(batch.id)
+            or authorization.get('library_epoch') != queue.runtime_state().library_epoch
+            or type(authorization.get('ai_requests')) is not int
+            or not 0 <= authorization['ai_requests'] <= MAX_AI_REQUESTS
+            or authorization['ai_requests'] != batch.ai_budget):
+        raise AIError('AI_REQUEST_QUOTA', '本次导入没有有效的 AI 请求配额')
+    updated = ImportBatch.objects.using('library').filter(pk=batch_id,
+        ai_budget=authorization['ai_requests'], ai_requests_used__lt=F('ai_budget')).update(ai_requests_used=F('ai_requests_used') + 1)
+    if updated != 1:
+        raise AIError('AI_REQUEST_QUOTA', '本次导入的 AI 请求配额已用完')
+
+
+def _preview_digest(batch):
+    digest = hashlib.sha256(str(batch.id).encode())
+    for row in batch.entries.order_by('id').values_list('id', 'url', 'title', 'original_folder_path', 'status', 'error_code').iterator(chunk_size=500):
+        status, error = row[-2:]
+        # Execution can discover a URL created after preview; that skip is still
+        # the same authorized entry. An initially invalid/duplicate row cannot
+        # become executable without changing the confirmation digest.
+        eligibility = 'eligible' if status in ('pending', 'imported') or (status == 'duplicate' and error == 'URL_EXISTS') else status
+        digest.update(json.dumps((*row[:-2], eligibility), default=str, ensure_ascii=False, separators=(',', ':')).encode())
+        digest.update(b'\n')
+    return digest.hexdigest()
+
+
+def import_plan(batch):
+    from django.core import signing
+    from . import queue
+    count = batch.entries.filter(status__in=('pending', 'imported')).count()
+    plan = {'batch_id': str(batch.id), 'digest': _preview_digest(batch),
+            'library_epoch': queue.runtime_state().library_epoch,
+            'entries': count, 'captures': count * 2, 'ai_requests': _ai_budget(count)}
+    return {**plan, 'can_execute': count <= MAX_EXECUTION_ENTRIES,
+            'entry_limit': MAX_EXECUTION_ENTRIES,
+            'confirmation_token': signing.dumps(plan, salt='import-execution-v1', compress=True)}
 
 
 class ImportError(ValueError):
@@ -160,6 +217,20 @@ def execute_import(batch_id, *, create_callback=None, chunk_size=100, execution_
     batch = ImportBatch.objects.using("library").get(pk=batch_id)
     if batch.state == "succeeded":
         return batch
+    if batch.stage == 'records':
+        from django.core import signing
+        from .errors import ApiError
+        try:
+            authorized = signing.loads(batch.execution_authorization, salt='import-execution-v1')
+        except (signing.BadSignature, TypeError):
+            raise ApiError('IMPORT_CONFIRMATION_REQUIRED', '请重新预览并确认导入工作量', 409) from None
+        actual = batch.entries.filter(status__in=('pending', 'imported')).count()
+        if (authorized.get('batch_id') != str(batch.id) or authorized.get('digest') != _preview_digest(batch)
+                or authorized.get('library_epoch') != queue.runtime_state().library_epoch
+                or type(authorized.get('entries')) is not int or not 0 <= actual <= authorized['entries'] <= MAX_EXECUTION_ENTRIES
+                or batch.capture_budget != authorized.get('captures') or batch.capture_budget != 2 * authorized['entries']
+                or batch.ai_budget != authorized.get('ai_requests') or batch.ai_budget != _ai_budget(authorized['entries'])):
+            raise ApiError('IMPORT_CONFIRMATION_REQUIRED', '请重新预览并确认导入工作量', 409)
     with transaction.atomic(using="library"):
         check_execution()
         if batch.stage != "records":
@@ -171,6 +242,21 @@ def execute_import(batch_id, *, create_callback=None, chunk_size=100, execution_
     if create_callback is None:
         from .catalog import create_bookmark
         create_callback = lambda data: create_bookmark(data, schedule_initial=False)
+    def enqueue_captures(bookmark):
+        if bookmark.snapshot_enabled:
+            from .models import CaptureState
+            for variant in ('desktop', 'mobile'):
+                if CaptureState.objects.filter(bookmark=bookmark, variant=variant, current_version__isnull=False).exists():
+                    continue
+                queue.enqueue('capture', bookmark.id, variant, 40, group=batch.capture_group,
+                    input_revision=bookmark.capture_epoch,
+                    active_key=f'capture:{bookmark.id}:{variant}:{bookmark.capture_epoch}')
+    # Resume partial legacy imports and interrupted record creation without
+    # dropping previously imported sites or duplicating their live capture jobs.
+    for entry in batch.entries.filter(status='imported', bookmark__isnull=False).select_related('bookmark').iterator(chunk_size=100):
+        with transaction.atomic(using='library'):
+            check_execution()
+            enqueue_captures(entry.bookmark)
     while True:
         entry_ids = list(ImportEntry.objects.using("library").filter(
             batch_id=batch_id, status="pending").order_by("id").values_list("id", flat=True)[:chunk_size])
@@ -201,11 +287,7 @@ def execute_import(batch_id, *, create_callback=None, chunk_size=100, execution_
                             source_folder_path=entry.original_folder_path, source_title=entry.title)
                         entry.bookmark, entry.status = bookmark, "imported"
                         entry.save(using="library", update_fields=["bookmark", "status"])
-                        if bookmark.snapshot_enabled:
-                            for variant in ("desktop", "mobile"):
-                                queue.enqueue("capture", bookmark.id, variant, 40, group=batch.capture_group,
-                                              input_revision=bookmark.capture_epoch,
-                                              active_key=f"capture:{bookmark.id}:{variant}:{bookmark.capture_epoch}")
+                        enqueue_captures(bookmark)
                 except IntegrityError:
                     # Another add/import won URL uniqueness. Never modify it.
                     if not Bookmark.objects.using("library").filter(canonical_url=canonical).exists():
@@ -235,7 +317,7 @@ def serialize_import(batch):
         int(10 * (batch.total - entries.filter(status="pending").count()) / max(1, batch.total)))
     capture_jobs = Job.objects.filter(memberships__group_id=batch.capture_group_id, kind="capture") if capture else Job.objects.none()
     failed_ids = set(capture_jobs.filter(state__in=("failed", "cancelled")).values_list("target_id", flat=True))
-    return {"id": str(batch.id), "state": batch.state, "source_type": batch.source_type,
+    result = {"id": str(batch.id), "state": batch.state, "source_type": batch.source_type,
             "total": batch.total, "valid": batch.valid, "duplicate": batch.duplicate,
             "invalid": batch.invalid, "imported": imported,
             "pending": entries.filter(status="pending").count(),
@@ -248,18 +330,42 @@ def serialize_import(batch):
             "classification_completed": classification["completed"] if classification else 0,
             "review_ready": batch.stage == "review", "review_notified": batch.review_notified,
             "exceeds_design_capacity": batch.total > 1000}
+    if batch.state in ('preview', 'previewed'):
+        result['execution_plan'] = import_plan(batch)
+        result['valid'] = result['execution_plan']['entries']
+    return result
 
 
-def start_import(batch):
+def start_import(batch, confirmation_token=None):
     """Idempotently hand a parsed batch to the worker; repeated requests never restart it."""
     from django.db import transaction
     from . import queue
+    from .errors import ApiError
+    from django.core import signing
     with transaction.atomic(using="library"):
         batch.refresh_from_db()
-        if batch.state in ("preview", "previewed", "queued") and batch.stage == "records":
+        if batch.state in ("preview", "previewed") and batch.stage == "records":
+            try:
+                confirmed = signing.loads(confirmation_token, salt='import-execution-v1', max_age=900)
+            except (signing.BadSignature, TypeError):
+                raise ApiError('IMPORT_CONFIRMATION_REQUIRED', '请先预览并确认导入工作量', 409) from None
+            expected = {key: value for key, value in import_plan(batch).items()
+                        if key in ('batch_id', 'digest', 'library_epoch', 'entries', 'captures', 'ai_requests')}
+            if confirmed != expected:
+                raise ApiError('IMPORT_PREVIEW_CHANGED', '导入内容已变化，请重新预览', 409)
+            if confirmed['entries'] > MAX_EXECUTION_ENTRIES:
+                raise ApiError('IMPORT_WORKLOAD_LIMIT', f'每次最多执行 {MAX_EXECUTION_ENTRIES} 个网站的抓取和分类，请拆分文件', 409)
+            if type(confirmed['captures']) is not int or confirmed['captures'] > MAX_CAPTURE_JOBS or confirmed['ai_requests'] > MAX_AI_REQUESTS:
+                raise ApiError('IMPORT_WORKLOAD_LIMIT', '导入工作量超过配额', 409)
+            if type(batch).objects.exclude(pk=batch.pk).filter(state__in=('queued', 'running')).exists():
+                raise ApiError('IMPORT_BUSY', '已有导入正在执行，请等待完成', 409)
+            batch.confirmation_digest = confirmed['digest']
+            batch.execution_authorization = confirmation_token
+            batch.valid = confirmed['entries']
+            batch.capture_budget, batch.ai_budget = confirmed['captures'], confirmed['ai_requests']
             queue.enqueue("import", batch.id, priority=60, active_key=f"import:{batch.id}")
             batch.state = "queued"
-            batch.save(update_fields=["state"])
+            batch.save(update_fields=["state", 'confirmation_digest', 'execution_authorization', 'valid', 'capture_budget', 'ai_budget'])
     return batch
 
 
@@ -295,6 +401,11 @@ def advance_imports():
                 return
             batch = ImportBatch.objects.get(pk=identity)
             ids = list(batch.entries.filter(status="imported", bookmark__isnull=False).values_list("bookmark_id", flat=True))
+            if len(ids) > MAX_EXECUTION_ENTRIES or _ai_budget(len(ids)) > batch.ai_budget:
+                batch.ai_status, batch.ai_error_code = 'skipped', 'IMPORT_WORKLOAD_LIMIT'
+                batch.state = 'failed'
+                batch.save()
+                continue
             if batch.stage == "captures":
                 if Job.objects.filter(memberships__group_id=batch.capture_group_id, state__in=queue.ACTIVE).exists():
                     continue

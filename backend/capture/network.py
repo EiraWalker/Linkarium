@@ -1,9 +1,39 @@
 """Early URL/DNS validation. Production additionally requires kernel egress isolation."""
 import ipaddress
 import socket
+import threading
+import time
 from urllib.parse import urlsplit
 
 from .models import CaptureError
+
+
+class SystemResolver:
+    """Resolve once per capture and retain the exact addresses used by its proxy."""
+    def __init__(self, deadline):
+        self.deadline = deadline
+        self.cache = {}
+        self.lock = threading.RLock()
+        self.stopped = False
+
+    def resolve(self, host, port=443):
+        with self.lock:
+            if self.stopped or time.monotonic() >= self.deadline:
+                raise CaptureError('timeout', 'Capture DNS time budget exhausted')
+            key = (host, port)
+            if key not in self.cache:
+                if len(self.cache) >= 128:
+                    raise CaptureError('dns_budget', 'Capture DNS query budget exhausted')
+                answers = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                addresses = list(dict.fromkeys(ipaddress.ip_address(row[4][0]) for row in answers))
+                if len(addresses) > 32:
+                    raise CaptureError('dns_budget', 'Capture DNS answer count exceeds budget')
+                self.cache[key] = addresses
+            return list(self.cache[key])
+
+    def close(self):
+        with self.lock:
+            self.stopped = True
 
 
 class PublicURLPolicy:
@@ -40,7 +70,8 @@ class PublicURLPolicy:
             raise CaptureError("unsafe_url", "Application and deployment hosts cannot be captured")
         if host in self.allow_test_hosts:
             # This exception is constructed by the test harness, never exposed through the product API.
-            return [ipaddress.ip_address(row[4][0]) for row in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
+            return self.resolver.resolve(host, port) if self.resolver else [
+                ipaddress.ip_address(row[4][0]) for row in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
         if port not in (80, 443) or host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
             raise CaptureError("unsafe_url", "Target host or port is not public")
         # Reject shortened/integer/octal address spellings interpreted as IPs by browsers.

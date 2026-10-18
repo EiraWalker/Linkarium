@@ -35,15 +35,16 @@ class LauncherClient:
 
     def capture(self, request: CaptureRequest) -> CaptureResult:
         request.validate()
-        folder = self.spool_path / request.attempt_uuid
+        folder = self.spool_path / 'incoming' / request.attempt_uuid
         folder.mkdir(mode=0o750, parents=True, exist_ok=False)
         allowed = ('attempt_uuid', 'generation', 'library_epoch', 'url', 'variant', 'mode')
         payload = {name: getattr(request, name) for name in allowed}
         (folder / 'request.json').write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
         response = self._call({'action': 'start', **{name: payload[name] for name in ('attempt_uuid', 'generation', 'library_epoch')}})
         result = CaptureResult(**response['result'])
+        folder = self.spool_path / 'results' / request.attempt_uuid
         if result.artifact_path:
-            artifact = folder / 'output' / Path(result.artifact_path).name
+            artifact = folder / Path(result.artifact_path).name
             if artifact.is_symlink() or not artifact.is_file():
                 raise CaptureError('launcher_protocol', 'Launcher artifact is not a regular file')
             if not isinstance(result.sha256, str) or len(result.sha256) != 64 or any(value not in '0123456789abcdef' for value in result.sha256):
@@ -59,7 +60,7 @@ class LauncherClient:
             width, height = (1366, 768) if request.variant == 'desktop' else (390, 844)
             if (result.viewport_width, result.viewport_height) != (width, height):
                 raise CaptureError('launcher_protocol', 'Launcher preview viewport is invalid')
-            preview = folder / 'output' / Path(result.preview_path).name
+            preview = folder / Path(result.preview_path).name
             if (not isinstance(result.preview_sha256, str) or len(result.preview_sha256) != 64
                     or any(value not in '0123456789abcdef' for value in result.preview_sha256)
                     or preview.name != result.preview_sha256 + '.jpg'
@@ -79,3 +80,7 @@ class LauncherClient:
 
     def status(self, attempt_uuid, generation, library_epoch):
         return self._call({'action': 'status', 'attempt_uuid': attempt_uuid, 'generation': generation, 'library_epoch': library_epoch})
+
+    def release(self, attempt_uuid, generation, library_epoch):
+        """Release immutable staging after publication, or cancel and clean an error."""
+        return self._call({'action': 'release', 'attempt_uuid': attempt_uuid, 'generation': generation, 'library_epoch': library_epoch})

@@ -9,14 +9,14 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import httpx
 
 from capture import CaptureError, CaptureRequest
 from capture.doh_proxy import PinnedPublicProxy, PublicDohResolver, BoundedHeaderReader
-from capture.network import PublicURLPolicy
+from capture.network import PublicURLPolicy, SystemResolver
 
 
 class StaticResolver:
@@ -80,6 +80,48 @@ class DoHResolverTests(unittest.TestCase):
 
 
 class PinnedProxyTests(unittest.TestCase):
+    def test_system_dns_rebind_cannot_change_the_actual_connection(self):
+        stream = MagicMock()
+        connector = MagicMock(return_value=stream)
+        resolver = SystemResolver(time.monotonic() + 10)
+        public = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', 80))]
+        private = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('127.0.0.1', 80))]
+        proxy = PinnedPublicProxy(resolver, 1024 * 1024, time.monotonic() + 10, connector=connector).start()
+        try:
+            with patch('capture.network.socket.getaddrinfo', side_effect=[public, private]) as lookup:
+                proxy.policy.validate('http://rebind.example/')
+                proxy.connect('http://rebind.example/')
+                proxy.connect('http://rebind.example/image')
+            self.assertEqual(lookup.call_count, 1)
+            self.assertEqual([call.args[0] for call in connector.call_args_list],
+                             [('93.184.216.34', 80), ('93.184.216.34', 80)])
+        finally:
+            proxy.close()
+
+    def test_system_dns_mixed_private_answers_never_connect(self):
+        connector = MagicMock()
+        resolver = SystemResolver(time.monotonic() + 10)
+        answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (address, 443))
+                   for address in ('93.184.216.34', '127.0.0.1')]
+        proxy = PinnedPublicProxy(resolver, 1024 * 1024, time.monotonic() + 10, connector=connector).start()
+        try:
+            with patch('capture.network.socket.getaddrinfo', return_value=answers), self.assertRaises(CaptureError):
+                proxy.connect('https://rebind.example/')
+            connector.assert_not_called()
+        finally:
+            proxy.close()
+
+    def test_development_system_dns_capture_uses_pinned_proxy(self):
+        from capture.runner import capture
+        with tempfile.TemporaryDirectory() as directory:
+            request = CaptureRequest(str(uuid4()), 'test', 1, 'https://example.com/', directory, development=True)
+            def inspect_proxy(current, **arguments):
+                self.assertIsInstance(arguments['proxy'].resolver, SystemResolver)
+                self.assertTrue(arguments['proxy'].thread.is_alive())
+                return 'rendered'
+            with patch('capture.runner._capture', side_effect=inspect_proxy), patch.dict(os.environ, {'BOOKMARK_PUBLIC_DEPLOYMENT': '0'}):
+                self.assertEqual(capture(request), 'rendered')
+
     def test_cancelled_connector_does_not_try_remaining_public_addresses(self):
         calls = []
         def connector(address,timeout):
@@ -217,6 +259,59 @@ class PinnedProxyTests(unittest.TestCase):
             remote.close()
             if proxy.thread.is_alive():
                 proxy.close()
+
+    @unittest.skipUnless(os.environ.get('RUN_CAPTURE_INTEGRATION') == '1','Opt-in real Chromium integration')
+    def test_real_system_dns_capture_keeps_public_resolution_pinned(self):
+        from capture.runner import capture
+        root = Path(__file__).resolve().parents[2]
+        os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH', str(root / 'tools' / 'browsers'))
+        hosts, connections = [], []
+        class Origin(BaseHTTPRequestHandler):
+            def do_GET(self):
+                hosts.append(self.headers.get('Host'))
+                content = b'<!doctype html><html><head><title>Pinned system DNS</title></head><body><h1>Public origin</h1><img src="/image.svg"></body></html>'
+                mime = 'text/html'
+                if self.path == '/image.svg':
+                    content = b'<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30"><rect width="30" height="30" fill="blue"/></svg>'
+                    mime = 'image/svg+xml'
+                self.send_response(200)
+                self.send_header('Content-Type', mime)
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+            def log_message(self, *_arguments):
+                pass
+        origin = ThreadingHTTPServer(('127.0.0.1', 0), Origin)
+        thread = threading.Thread(target=origin.serve_forever, daemon=True)
+        thread.start()
+        real_lookup, real_connect = socket.getaddrinfo, socket.create_connection
+        resolutions = []
+        def lookup(host, port, *arguments, **keywords):
+            if host != 'rebind.example.test':
+                return real_lookup(host, port, *arguments, **keywords)
+            resolutions.append(host)
+            address = '93.184.216.34' if len(resolutions) == 1 else '127.0.0.1'
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (address, port))]
+        def connect(address, timeout):
+            connections.append(address)
+            self.assertEqual(address, ('93.184.216.34', 80))
+            return real_connect(('127.0.0.1', origin.server_port), timeout=timeout)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                request = CaptureRequest(str(uuid4()), 'test', 1, 'http://rebind.example.test/', directory,
+                                         development=True, dns_mode='system')
+                with patch('capture.network.socket.getaddrinfo', side_effect=lookup), \
+                        patch('capture.doh_proxy.socket.create_connection', side_effect=connect):
+                    result = capture(request)
+                self.assertIn('Public origin', Path(result.artifact_path).read_text(encoding='utf-8'))
+                self.assertIn('development-system-dns-pinned-ip-proxy', result.warnings)
+            self.assertEqual(resolutions, ['rebind.example.test'])
+            self.assertGreaterEqual(len(connections), 2)
+            self.assertTrue(all(host == 'rebind.example.test' for host in hosts))
+        finally:
+            origin.shutdown()
+            origin.server_close()
+            thread.join(timeout=2)
 
     @unittest.skipUnless(os.environ.get('RUN_CAPTURE_INTEGRATION') == '1','Opt-in real Chromium integration')
     def test_browser_private_redirect_cannot_bypass_proxy(self):

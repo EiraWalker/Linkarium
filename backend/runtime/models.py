@@ -83,6 +83,13 @@ class PasskeyChallenge(models.Model):
     result_credential_id = models.UUIDField(null=True)
 
 
+class AuthRequestBucket(models.Model):
+    key = models.CharField(max_length=64, primary_key=True)
+    window_start = models.DateTimeField(db_index=True)
+    options_count = models.PositiveSmallIntegerField(default=0)
+    verify_count = models.PositiveSmallIntegerField(default=0)
+
+
 class RuntimeState(models.Model):
     id = models.PositiveSmallIntegerField(primary_key=True, default=1)
     active_generation = models.CharField(max_length=64, default="initial")

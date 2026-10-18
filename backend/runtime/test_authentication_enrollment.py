@@ -32,8 +32,6 @@ class EnrollmentTests(TestCase):
     register = AuthenticationTests.register
 
     def grant_data(self, grant, name="新设备"):
-        if "initialization_code" in grant:
-            return {"bootstrap_code": grant["initialization_code"], "name": name}
         return {"enrollment_token": grant["enrollment_url"].split("=", 1)[1],
             "authorization_code": grant["authorization_code"], "name": name}
 
@@ -44,9 +42,9 @@ class EnrollmentTests(TestCase):
         before = fingerprint()
         owner_id = self.user.pk
         grant = issue_console_grant("first_passkey", ORIGIN)
-        self.assertEqual(grant["enrollment_url"], ORIGIN + "/login")
+        self.assertTrue(grant["enrollment_url"].startswith(ORIGIN + "/login#initialize="))
         self.assertFalse(self.client.get("/api/v1/session").json()["data"]["passkey_configured"])
-        options = self.post("passkey/register/options", {"name": "First passkey", "first_passkey_code": grant["authorization_code"]})
+        options = self.post("passkey/register/options", self.grant_data(grant, "First passkey"))
         self.assertEqual(options.status_code, 200, options.content)
         response, _ = self.finish(options.json()["data"])
         self.assertEqual(response.status_code, 200, response.content)
@@ -57,20 +55,16 @@ class EnrollmentTests(TestCase):
         self.assertTrue(self.client.get("/api/v1/session").json()["data"]["passkey_configured"])
         self.assertEqual(self.client.get("/api/v1/bookmarks").status_code, 200)
 
-    def test_first_passkey_code_requires_its_own_authority_and_cannot_bypass_existing_key(self):
+    def test_first_passkey_requires_secret_link_and_anonymous_guesses_cannot_lock_it(self):
         from library.errors import ApiError
         grant = issue_console_grant("first_passkey", ORIGIN)
-        for attempt in range(5):
-            response = self.post("passkey/register/options", {"first_passkey_code": "bad-code"})
-            self.assertEqual(response.status_code, 429 if attempt == 4 else 403)
-        self.assertEqual(self.post("passkey/register/options", {"first_passkey_code": grant["authorization_code"]}).status_code, 429)
-        fresh = issue_console_grant("first_passkey", ORIGIN)
-        linked = issue_console_grant("add_device", ORIGIN)
-        self.assertEqual(self.post("passkey/register/options", {"first_passkey_code": linked["authorization_code"]}).status_code, 403)
-        self.assertEqual(self.post("passkey/register/options", {"first_passkey_code": fresh["authorization_code"], "enrollment_token": "x"}).status_code, 400)
-        self.assertEqual(self.post("passkey/register/options", {"bootstrap_code": fresh["authorization_code"]}).status_code, 409)
-        options = self.post("passkey/register/options", {"first_passkey_code": fresh["authorization_code"]}).json()["data"]
-        other = self.post("passkey/register/options", {"first_passkey_code": fresh["authorization_code"]}).json()["data"]
+        for attempt in range(6):
+            self.assertEqual(self.post("passkey/register/options", {"first_passkey_code": "bad-code"}).status_code, 400)
+            self.assertEqual(self.post("passkey/register/options", {"enrollment_token": secrets.token_urlsafe(32),
+                "authorization_code": "bad-code"}).status_code, 403)
+        self.assertEqual(EnrollmentGrant.objects.get(active_slot="first_passkey").failed_attempts, 0)
+        options = self.post("passkey/register/options", self.grant_data(grant)).json()["data"]
+        other = self.post("passkey/register/options", self.grant_data(grant)).json()["data"]
         self.assertEqual(self.finish(options)[0].status_code, 200)
         self.credential_id = secrets.token_bytes(32)
         self.assertGreaterEqual(self.finish(other)[0].status_code, 400)
@@ -83,10 +77,10 @@ class EnrollmentTests(TestCase):
         with patch("django.utils.timezone.now", return_value=issued):
             previous = issue_console_grant("first_passkey", ORIGIN)
             fresh = issue_console_grant("first_passkey", ORIGIN)
-        self.assertEqual(self.post("passkey/register/options", {"first_passkey_code": previous["authorization_code"]}).status_code, 403)
+        self.assertEqual(self.post("passkey/register/options", self.grant_data(previous)).status_code, 403)
         self.assertIsNone(fresh["expires_at"])
         later = issued + timedelta(days=365)
-        data = {"first_passkey_code": fresh["authorization_code"]}
+        data = self.grant_data(fresh)
         with patch("django.utils.timezone.now", return_value=later):
             options = self.post("passkey/register/options", data).json()["data"]
             self.assertEqual(datetime.fromisoformat(options["expires_at"]), later + timedelta(minutes=3))
@@ -124,7 +118,7 @@ class EnrollmentTests(TestCase):
                     EnrollmentGrant.objects.filter(active_slot="first_passkey").update(failed_attempts=5)
                 elif reason == "revoked":
                     EnrollmentGrant.objects.filter(active_slot="first_passkey").update(invalidated_at=timezone.now())
-                response = self.post("passkey/register/options", {"first_passkey_code": grant["authorization_code"]})
+                response = self.post("passkey/register/options", self.grant_data(grant))
                 self.assertEqual(response.status_code, 429 if reason == "locked" else 403)
 
     def begin(self, grant, client=None):
@@ -209,8 +203,8 @@ class EnrollmentTests(TestCase):
         with patch("runtime.auth_grants.secrets.randbelow", side_effect=(12345678, 87654321)):
             fresh = issue_console_grant("first_passkey", ORIGIN)
         self.assertEqual(fresh["authorization_code"], "87654321")
-        self.assertEqual(self.post("passkey/register/options", {"first_passkey_code": previous["authorization_code"]}).status_code, 403)
-        self.assertEqual(self.post("passkey/register/options", {"first_passkey_code": fresh["authorization_code"]}).status_code, 200)
+        self.assertEqual(self.post("passkey/register/options", self.grant_data(previous)).status_code, 403)
+        self.assertEqual(self.post("passkey/register/options", self.grant_data(fresh)).status_code, 200)
 
     def test_existing_owner_without_credentials_never_reopens_bootstrap(self):
         from library.errors import ApiError
@@ -219,7 +213,7 @@ class EnrollmentTests(TestCase):
         self.assertEqual(raised.exception.code, "AUTH_ALREADY_INITIALIZED")
         self.user.is_active = False
         self.user.save()
-        self.assertEqual(self.post("passkey/register/options", {"bootstrap_code": "00000000"}).status_code, 409)
+        self.assertEqual(self.post("passkey/register/options", {"bootstrap_code": "00000000"}).status_code, 400)
 
     def test_wrong_codes_commit_five_attempt_lock_without_consuming_grant(self):
         grant = issue_console_grant("add_device", ORIGIN)

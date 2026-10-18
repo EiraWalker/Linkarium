@@ -26,6 +26,19 @@ The launcher seals its own fixed 96 MiB budget; callers cannot select a larger o
 have nftables default-drop egress, IPv6 blocked, fixed DNS and public TCP 80/443. Host forward
 filtering occurs after DNAT and denies private, own-application and reserved ranges.
 
+The spool root is root-owned and group-readable, never application-writable. Only
+`incoming/` accepts application-created request directories. The launcher atomically
+moves an attempt into root-only `private/`, opens it with `O_DIRECTORY|O_NOFOLLOW`,
+and removes application write permissions through that descriptor before reading its
+bounded request. Mounts, sealed input and temporary outputs stay under this protected
+parent. Verified final bytes move into root-owned, application-readable `results/`.
+The worker calls the fixed `release` operation after publication and on errors; a failed
+release never invalidates an already published archive. Cancellation and lease recovery
+also release staging. An idle sweep runs every minute and removes inactive staging after
+one hour. Admission is limited to 32 retained attempts and 1 GiB of retained output,
+reserving each new attempt's full HTML and preview budget before execution. Active
+attempts and persisted live cgroups are excluded from expiration cleanup.
+
 Before activation on a Linux host, verify sandboxed Chromium launch without `--no-sandbox`,
 dual-device fidelity, private IPv4/IPv6, mixed DNS, redirect/iframe/subresource/WebSocket and
 DNS-rebinding denial, host/DNAT denial, no database/keys mounts, memory/disk/runtime budgets,
@@ -50,6 +63,11 @@ this workstation's Mihomo fake DNS reserved 198.18/15 addresses as designed.
 
 `CaptureRequest(development=True, dns_mode="public-doh", ...)` enables a per-capture
 loopback-only authenticated HTTP/CONNECT proxy. The default remains `dns_mode="system"`.
+Default development capture uses the same proxy with the system resolver: each host/port
+is resolved once within a capture and every connection uses the validated literal IP.
+Chromium never performs a second target-host resolution. Mixed public/private answers
+are refused; public IPv4 and IPv6 system answers remain supported. Test-only allow-host
+exceptions are kept inside the explicit fixture request contract.
 The compatibility mode queries the fixed `https://1.1.1.1/dns-query` JSON API through HTTPX
 with environment proxies disabled and certificate verification enabled. It accepts only
 validated public IPv4 answers and connects to those literal addresses; it never falls

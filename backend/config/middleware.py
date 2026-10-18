@@ -34,6 +34,18 @@ class CredentialSessionMiddleware:
         return self.get_response(request)
 
 
+class AuthenticationChallengeMiddleware:
+    """Emit ceremony binding cookies without touching the durable session store."""
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        from runtime.auth_challenges import set_browser_cookie
+        response = self.get_response(request)
+        set_browser_cookie(request, response)
+        return response
+
+
 class CanonicalAccessMiddleware:
     """Send document navigation from the private upstream to its HTTPS identity."""
     def __init__(self, get_response):

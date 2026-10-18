@@ -86,10 +86,11 @@ export function Login({ onLogin, initializationRequired, maintenanceMode, passwo
           <p role="alert">此添加入口已失效，请重新获取链接和授权码。</p>
           <Button onClick={openLogin}>返回登录</Button>
         </div> : bootstrap || firstPasskey || intent ? <div>
-          <h2 class={p.heading}>{bootstrap ? "首次配置" : firstPasskey ? "创建第一个 Passkey" : intent?.kind === "reset" ? "重置登录凭据" : "添加此设备的 Passkey"}</h2>
+          <h2 class={p.heading}>{initializationRequired ? "首次配置" : !passkeyConfigured ? "创建第一个 Passkey" : intent?.kind === "reset" ? "重置登录凭据" : "添加此设备的 Passkey"}</h2>
           {intent?.kind === "reset" && <p class={p.status}>新 Passkey 创建成功后，旧 Passkey、私钥文件登录凭据和登录会话将失效。</p>}
-          <PasskeyEnrollment mode={bootstrap ? "bootstrap" : firstPasskey ? "first_passkey" : intent!} disabled={!canUsePasskey}
+          {intent ? <PasskeyEnrollment mode={intent} initialization={initializationRequired} disabled={!canUsePasskey}
             onComplete={async result => { await onLogin(result.registration_mode === "reset" ? "旧登录凭据已撤销。" : undefined); }} onLogin={openLogin} />
+            : <p role="status">请打开服务器终端提供的完整注册链接，再输入授权码。</p>}
           <div class={p.back}><Button onClick={openLogin}>返回登录</Button></div>
         </div> : <div>
           <ErrorNotice message={error} />

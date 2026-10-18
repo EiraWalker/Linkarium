@@ -19,7 +19,7 @@
 | --- | --- | --- |
 | GET | /session | `{authenticated, csrf_token, initialization_required, maintenance_mode, auth_mode, password_login_enabled, passkey_configured, file_key_configured, passkey_origin, passkey_available, credential_id, auth_expires_at}`；登录后附 active_generation 和 library_epoch；token 是 masked 值 |
 | POST | /session/login | 仅显式调试模式接受 password；正常模式禁止密码登录 |
-| POST | /session/passkey/register/options、/verify | 首次码、本机有效凭据会话、或链接标识＋独立码授权注册；用途由服务器授权记录确定 |
+| POST | /session/passkey/register/options、/verify | 本机有效凭据会话，或链接标识＋独立码授权注册（包括首次登记）；用途由服务器授权记录确定 |
 | POST | /session/passkey/login/options、/verify | 浏览器 WebAuthn 登录；校验来源、RP ID、challenge、签名和用户验证 |
 | POST | /session/key/options、/verify | 可选 Ed25519 文件密钥登录；浏览器本地签名，只上传签名 |
 | POST | /session/passkey/grants | 有效凭据会话签发五分钟单次添加授权；201 返回 enrollment_url、authorization_code、expires_at |
@@ -34,9 +34,11 @@
 | POST | /data/clear | 确认清空所有网站数据、快照、任务、应用内备份；保留密码、刷新设置和 AI 配置/密钥 |
 | POST | /data/reset | 确认删除全部用户数据，包括密码、会话、AI 配置和密钥；返回密码初始化状态 |
 
-首次初始化由终端 `passkey_initialize` 输出成功使用前不过期的初始化码，服务重启保留该授权，网页完成首个 Passkey 后建立唯一所有者。已有所有者、尚无 Passkey 时同一命令签发相同期限的首个 Passkey 码，保留原账号和文件密钥。手动重新生成会替换旧码；错误五次锁定；注册 challenge 仍为三分钟。`passkey_reset` 只签发十分钟的重置入口，新的 Passkey 成功提交时才撤销旧 Passkey、文件密钥、授权及会话，收藏数据保留。完整流程见 [认证说明](authentication.md)。整库恢复后要求重新登录，不从备份恢复认证记录。
+首次初始化由终端 `passkey_initialize` 输出成功使用前不过期的完整链接和初始化码；每次服务启动重新签发并使旧授权失效，网页完成首个 Passkey 后建立唯一所有者。已有所有者、尚无 Passkey 时同一命令签发相同期限的首个 Passkey 链接和码，保留原账号和文件密钥。手动重新生成会替换旧授权；只有持有高熵链接标识的请求才可消耗该授权的五次错误额度；注册 challenge 仍为三分钟。`passkey_reset` 只签发十分钟的重置入口，新的 Passkey 成功提交时才撤销旧 Passkey、文件密钥、授权及会话，收藏数据保留。完整流程见 [认证说明](authentication.md)。整库恢复后要求重新登录，不从备份恢复认证记录。
 
-注册 options 输入严格互斥：`{name}`、`{name,bootstrap_code}`、`{name,first_passkey_code}`、`{name,enrollment_token,authorization_code}`。过时 `setup_token` 被拒绝。verify 输入 `{challenge_id,credential}`，返回 `registered/authenticated/credential_id/already_completed/registration_mode`；`registration_mode` 为服务器验证的 `local/bootstrap/first_passkey/add_device/reset`，前端据此显示重置结果。同一提交重试不重复登记或再次发放登录 cookie；响应丢失后读取 `/session`，必要时使用刚创建的 Passkey 登录。授权码不出现在链接、二维码、日志或查询接口中。`first_passkey_code` 仅由终端签发并绑定现有所有者、来源与认证版本，只在当前 RP 尚无 Passkey 时有效，保留原账号和文件密钥。
+注册 options 输入严格互斥：本机会话 `{name}`，或所有链接授权 `{name,enrollment_token,authorization_code}`。旧 `bootstrap_code`、`first_passkey_code` 和 `setup_token` 被拒绝。首次链接使用 `#initialize=token`，新设备使用 `#enroll=token`，重置使用 `#reset=token`；片段不会发送给 HTTP 服务器，前端在 POST 中提交 token。verify 输入 `{challenge_id,credential}`，返回 `registered/authenticated/credential_id/already_completed/registration_mode`；`registration_mode` 为服务器验证的 `local/bootstrap/first_passkey/add_device/reset`，前端据此显示重置结果。同一提交重试不重复登记或再次发放登录 cookie；响应丢失后读取 `/session`，必要时使用刚创建的 Passkey 登录。授权码不出现在链接、二维码、日志或查询接口中。
+
+匿名 options 仅设置十五分钟签名 HttpOnly、SameSite=Strict 浏览器 nonce，不分配数据库 session；verify 必须携带同一 cookie。options、verify 共享跨进程的来源和全局限流；挑战总量与每浏览器未完成挑战有硬上限，来源计数表有硬容量。超过限制返回 `429 AUTH_RATE_LIMITED`。预算和定期回收规则见 [认证说明](authentication.md)。
 
 正常会话绑定具体登录凭据和认证版本，自登录成功起固定十四天到期，不因访问续期。删除凭据使它的所有会话在下一次受保护请求失效；本机添加保持原会话关联和期限。授权错误包括 `AUTH_GRANT_INVALID/EXPIRED/LOCKED/USED`、`AUTH_ALREADY_INITIALIZED`、`AUTH_LAST_CREDENTIAL`、`AUTH_REVOKED`、`AUTH_ATTEMPT_IN_PROGRESS`。
 
@@ -151,9 +153,9 @@ JobAttempt 是内部执行身份，启动、取消和 launcher 退出通知均�
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | POST | /imports/preview | multipart HTML，解析为 ImportBatch/Entry，返回统计 |
-| POST | /imports | multipart HTML；带 Idempotency-Key，解析并立即启动三阶段流程，返回 202/ImportBatch |
-| GET | /imports | 列出进行中的流程及尚未自动提醒的已完成批次；页面切换不丢失状态 |
-| POST | /imports/{id}/execute | 执行已预检批次；逐块提交、可恢复，已处理项不重复插入 |
+| POST | /imports | multipart HTML；仅解析预览，返回 201/ImportBatch，与 /imports/preview 相同 |
+| GET | /imports | 列出待确认预览、进行中流程及尚未自动提醒的已完成批次 |
+| POST | /imports/{id}/execute | body 带预览返回的 confirmation_token；验证内容、工作量与 epoch 后执行 |
 | GET | /imports/{id} | 进度与跳过/失败原因 |
 | POST | /imports/{id}/review-notified | 可校对后记录已自动提醒；关闭弹窗后不再自动打开 |
 | POST | /backups | 带 Idempotency-Key，在 state 创建 kind=backup 的 MaintenanceOperation，返回 202/operation_id，由控制器执行 |
@@ -162,11 +164,16 @@ JobAttempt 是内部执行身份，启动、取消和 launcher 退出通知均�
 | POST | /restores/validate | 流式上传并登记 kind=restore 的 MaintenanceOperation，返回 202/operation_id；后台验证后通过 GET 查询清单、所需空间、兼容性和确认 token |
 | POST | /restores/{operation_id}/execute | body 带验证 token 与覆盖确认，附 Idempotency-Key；同一 state 操作进入维护执行，返回 202/operation_id |
 | GET | /restores/{operation_id} | 查询同一运行操作的阶段/结果；只接受 kind=restore，重启期间可能暂不可达 |
+| POST | /restores/{operation_id}/cancel | 取消未执行的预览或未领取恢复，回收其源文件与候选；正在激活时拒绝 |
 | GET | /restores/{operation_id}/pre-backup/download | 鉴权下载该次覆盖恢复前自动生成的备份；尚未生成时返回 404 |
 | GET | /maintenance-operations/{operation_id} | 统一查询 state 中的 backup/restore/upgrade 阶段与脱敏结果；始终需要 owner 会话 |
 | POST | /maintenance-operations/lookup | `{method,path,idempotency_key}`，按当前 owner 查询 state 幂等记录，返回原 operation_id/状态；查询只读但仍校验 CSRF |
 
 两种恢复状态查询（专属 `/restores/{id}` 与统一 `/maintenance-operations/{id}`）均在 awaiting_confirmation 阶段返回短时 validation_token。令牌不写进幂等响应日志，重复轮询不轮换令牌或使前一个令牌失效。
+
+所有入口在 Waitress 请求头阶段限制普通请求体为 1 MiB。更大 multipart 上传先以 owner 会话和 CSRF 调用 `POST /runtime/uploads`，提交完整 API `path` 和含 multipart 余量的 `size`，得到一次性 `upload_token`，随后置于 `X-Linkarium-Upload`。授权120秒内开始，只允许指定路径、大小和一个并发上传；入站大请求绝对时限最多1小时，断线和超时释放额度。HTML 文件仍最多20 MiB，multipart门禁21 MiB，恢复门禁16 GiB，并先预留同时缓冲、解析和持久副本的磁盘空间。
+
+导入预览返回 `execution_plan`（entries/captures/ai_requests/can_execute/entry_limit/confirmation_token）。确认15分钟有效；按实际条目而非备份内汇总字段计算。每次执行最多1000个网站、2000个抓取任务、101次AI请求，一次只运行一个导入。每次AI实际出网前持久扣减，重试不能重置预算。旧未确认工作在升级后重新显示预览。
 
 恢复授权针对具体上传包 hash 和当前库 epoch；包替换或库已被另一次恢复切换则 token 失效。校验失败不改变当前库。覆盖操作由控制器执行，视图不在请求线程里覆盖 SQLite。
 
@@ -176,7 +183,7 @@ JobAttempt 是内部执行身份，启动、取消和 launcher 退出通知均�
 
 进入维护但 Web 尚运行时返回可识别 `503 MAINTENANCE`；Web/worker 停止期间可能连接失败或由入口返回 502/503，不能保证操作查询持续可用，也不能把断连显示为恢复失败。前端保留 operation_id 和 Idempotency-Key，按有界退避重连；恢复切换撤销会话后先重新登录，再查询运行库操作状态。
 
-登记操作后若 202 响应丢失，重新登录后调用 `/maintenance-operations/lookup` 找回同一操作；同键同参重试登记只返回原响应/operation_id，不能再次覆盖。只查到明确 succeeded/failed 才显示相应结论。幂等查询接口不执行请求，不能通过回放过期确认 token 重新触发维护；活动操作的关联记录保持到结束。操作状态可能为 validating、awaiting_confirmation、queued、running、succeeded、failed，stage 解释正在执行的具体步骤。
+登记操作后若 202 响应丢失，重新登录后调用 `/maintenance-operations/lookup` 找回同一操作；同键同参重试登记只返回原响应/operation_id，不能再次覆盖。只查到明确终态才显示相应结论。幂等查询接口不执行请求，不能通过回放过期确认 token 重新触发维护；活动操作的关联记录保持到结束。操作状态可能为 uploading、validating、awaiting_confirmation、queued、running、succeeded、failed、cancelled、expired，stage 解释正在执行的具体步骤。
 
 ## 7. 原子性与失败表现
 

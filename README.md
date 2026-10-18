@@ -53,7 +53,7 @@ Windows 启动默认选择已连接的物理 Wi-Fi，无可用 Wi-Fi 时选择�
 .\scripts\start.ps1 -DevelopmentCapture -LanHttps
 ```
 
-终端会输出 HTTPS 地址、公开 CA 证书绝对路径及证书安装页地址；设置页在生成设备授权的按钮右侧提供“安装 CA 证书”。网卡选择、防火墙、Android 安装及已有 CA 接管见[局域网访问](docs/network-access.md)。
+终端输出 HTTPS 地址、公开 CA 文件路径、SHA-256 指纹及仅服务器本机可访问的证书页。新设备经独立可信渠道取得证书并核验指纹；首次登记使用终端完整链接和独立授权码。网卡、防火墙及 CA 接管见[局域网访问](docs/network-access.md)。
 
 Windows 的 `-DevelopmentCapture` 会在本机执行网页采集。使用 Clash Verge 时，可在“设置 → 网页缓存代理”配置本机代理；fake-IP DNS 环境也可启动时附加 `-PublicDns`。详见[缓存兼容性与代理](docs/capture-proxy.md)。
 

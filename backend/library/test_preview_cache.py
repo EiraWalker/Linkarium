@@ -22,26 +22,38 @@ class PreviewCacheTests(TestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.workspace = tempfile.TemporaryDirectory()
-        cls.jpeg = Path(cls.workspace.name) / "sample.jpg"
-        # Browser-encoded fixture, shared once; these tests cover storage/API.
-        # Real viewport screenshots are covered by capture integration tests.
-        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(Path(__file__).resolve().parents[2] / "tools" / "browsers"))
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
-            page = browser.new_page(viewport={"width": 1366, "height": 768})
-            encoded = page.evaluate("""() => { const c = document.createElement('canvas');
-                c.width = 1366; c.height = 768;
-                const ctx = c.getContext('2d'); ctx.fillStyle = '#ddeeff';
-                ctx.fillRect(0, 0, c.width, c.height); return c.toDataURL('image/jpeg', .82).split(',')[1]; }""")
-            cls.jpeg.write_bytes(base64.b64decode(encoded))
-            browser.close()
+        try:
+            cls.workspace = tempfile.TemporaryDirectory()
+            cls.jpeg = Path(cls.workspace.name) / "sample.jpg"
+            # Browser-encoded fixture, shared once; these tests cover storage/API.
+            # Real viewport screenshots are covered by capture integration tests.
+            os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(Path(__file__).resolve().parents[2] / "tools" / "browsers"))
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                page = browser.new_page(viewport={"width": 1366, "height": 768})
+                encoded = page.evaluate("""() => { const c = document.createElement('canvas');
+                    c.width = 1366; c.height = 768;
+                    const ctx = c.getContext('2d'); ctx.fillStyle = '#ddeeff';
+                    ctx.fillRect(0, 0, c.width, c.height); return c.toDataURL('image/jpeg', .82).split(',')[1]; }""")
+                cls.jpeg.write_bytes(base64.b64decode(encoded))
+                browser.close()
+        except BaseException:
+            # unittest skips tearDownClass when subclass setup fails after Django
+            # opens its class atomics. Release them before later transaction tests.
+            try:
+                if hasattr(cls, "workspace"):
+                    cls.workspace.cleanup()
+            finally:
+                super().tearDownClass()
+            raise
 
     @classmethod
     def tearDownClass(cls):
-        cls.workspace.cleanup()
-        super().tearDownClass()
+        try:
+            cls.workspace.cleanup()
+        finally:
+            super().tearDownClass()
 
     def setUp(self):
         RuntimeState.objects.create(pk=1)

@@ -402,6 +402,12 @@ def route_request(request, route):
     if route == "runtime/status":
         require_method(request, "GET")
         return ok(runtime_status())
+    if route == "runtime/uploads":
+        require_method(request, "POST")
+        from runtime.ingress import upload_admissions
+        data = payload(request)
+        token = upload_admissions().issue(data.get("path"), data.get("size"))
+        return ok({"upload_token": token, "expires_in": 120}, 201)
     if route == "capture-network":
         require_method(request, "GET", "PATCH")
         from capture.proxy_config import status, save_config
@@ -656,7 +662,7 @@ def route_request(request, route):
     if route == "imports" and request.method == "GET":
         from library.importing import serialize_import
         from django.db.models import Q
-        batches = ImportBatch.objects.filter(Q(state__in=("queued", "running")) | Q(stage="review", review_notified=False)).select_related("capture_group", "classification_group").order_by("created_at")
+        batches = ImportBatch.objects.filter(Q(state__in=("preview", "previewed", "queued", "running")) | Q(stage="review", review_notified=False)).select_related("capture_group", "classification_group").order_by("created_at")
         return ok([serialize_import(batch) for batch in batches])
     if route in ("imports", "imports/preview"):
         require_method(request, "POST")
@@ -669,9 +675,7 @@ def route_request(request, route):
         content = uploaded.read()
         def import_file():
             batch = preview_import(content)
-            if route == "imports":
-                start_import(batch)
-            return ok(serialize_import(batch), 202 if route == "imports" else 201)
+            return ok(serialize_import(batch), 201)
         return idempotent(request, {"file_sha256": hashlib.sha256(content).hexdigest()}, import_file)
     if parts[0] == "imports" and len(parts) >= 2:
         from library.importing import serialize_import, start_import
@@ -682,7 +686,7 @@ def route_request(request, route):
         if parts[2] == "execute":
             require_method(request, "POST")
             data = payload(request)
-            return idempotent(request, data, lambda: ok(serialize_import(start_import(batch)), 202))
+            return idempotent(request, data, lambda: ok(serialize_import(start_import(batch, data.get('confirmation_token'))), 202))
         if parts[2] == "review-notified":
             require_method(request, "POST")
             if batch.stage != "review":
@@ -691,6 +695,9 @@ def route_request(request, route):
             return ok({"id": str(batch.id), "review_notified": True})
     if parts[0] in ("backups", "restores", "maintenance-operations"):
         from runtime import maintenance
+        if len(parts) == 3 and parts[0] == "restores" and parts[2] == "cancel":
+            require_method(request, "POST")
+            return ok(maintenance.serialize_operation(maintenance.cancel_restore(parts[1])))
         if route == "backups":
             require_method(request, "POST")
             data = payload(request)

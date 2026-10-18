@@ -95,8 +95,8 @@ class PreviewContractTests(unittest.TestCase):
                           'text_excerpt': '', 'final_url': 'https://example.com'}
 
                 def respond(_message):
-                    output = client.spool_path / request.attempt_uuid / 'output'
-                    output.mkdir()
+                    output = client.spool_path / 'results' / request.attempt_uuid
+                    output.mkdir(parents=True)
                     (output / (digest + '.html')).write_bytes(archive)
                     (output / Path(result['preview_path']).name).write_bytes(content)
                     return {'ok': True, 'result': result}
@@ -109,7 +109,7 @@ class PreviewContractTests(unittest.TestCase):
                     else:
                         response = client.capture(request)
                         self.assertEqual(Path(response.preview_path).parent,
-                            client.spool_path / request.attempt_uuid / 'output')
+                            client.spool_path / 'results' / request.attempt_uuid)
 
 
 @unittest.skipUnless(os.environ.get('RUN_CAPTURE_INTEGRATION') == '1', 'Opt-in real Chromium/Monolith integration')

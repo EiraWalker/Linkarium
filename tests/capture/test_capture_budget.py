@@ -43,7 +43,9 @@ class CaptureBudgetTests(unittest.TestCase):
                 max_bytes=96 * 1024 * 1024)), encoding='utf8')
             launcher = module.Launcher({'spool_root': directory})
             with self.assertRaisesRegex(ValueError, 'input identity mismatch'):
-                launcher.start(identity)
+                # Exercise schema validation independently of Linux's atomic
+                # filesystem takeover (covered by the root-only spool tests).
+                launcher.execute(identity, folder)
 
     def test_root_owned_deployment_limits_match_the_application_contract(self):
         # These deployment modules run outside the application's import/runtime

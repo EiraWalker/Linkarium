@@ -51,7 +51,8 @@ class LanHttps:
         if not all(1 <= port <= 65535 for port in (self.https_port, self.certificate_port)) or self.https_port == self.certificate_port:
             raise RuntimeError("HTTPS 和证书安装页需要两个不同的有效端口。")
         self.origin = f"https://{self.domain}" + (f":{self.https_port}" if self.https_port != 443 else "")
-        self.certificate_url = f"http://{adapter.ipv4}:{self.certificate_port}/"
+        # Root trust is bootstrapped on the server, never from the untrusted LAN.
+        self.certificate_url = f"http://127.0.0.1:{self.certificate_port}/"
         self.public = self.root / "public"
         self.ca_path = self.public / "linkarium-ca.crt"
         self.config_path = self.root / "Caddyfile"
@@ -65,7 +66,7 @@ class LanHttps:
 
     def configure(self, backend_port):
         connection = {"mode": "lan_https", "adapter": self.adapter.name, "ipv4": self.adapter.ipv4,
-            "access_url": self.origin + "/", "certificate_url": self.certificate_url}
+            "access_url": self.origin + "/", "certificate_url": None}
         os.environ.update(BOOKMARK_CONNECTION=json.dumps(connection), BOOKMARK_WEB_ADDRESSES='["127.0.0.1"]',
             BOOKMARK_PASSKEY_ORIGIN=self.origin, BOOKMARK_HTTPS="1", BOOKMARK_TRUST_PROXY="1",
             BOOKMARK_PROXY_PEER="127.0.0.1", BOOKMARK_CSRF_ORIGINS=self.origin,
@@ -73,12 +74,12 @@ class LanHttps:
         self.backend_port = backend_port
 
     def prepare(self):
-        for port in (self.https_port, self.certificate_port):
+        for address, port in ((self.adapter.ipv4, self.https_port), ('127.0.0.1', self.certificate_port)):
             with socket.socket() as probe:
                 if os.name == "nt":
                     probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
                 try:
-                    probe.bind((self.adapter.ipv4, port))
+                    probe.bind((address, port))
                 except OSError:
                     raise RuntimeError(f"局域网端口已被占用或无法绑定：{self.adapter.ipv4}:{port}") from None
         self.public.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -117,8 +118,8 @@ https://$DOMAIN:$TLS_PORT {
         header_up -X-Forwarded-Port
     }
 }
-http://$ADDRESS:$CERT_PORT {
-    bind $ADDRESS
+http://127.0.0.1:$CERT_PORT {
+    bind 127.0.0.1
     @certificate path /linkarium-ca.crt
     handle @certificate {
         root * $PUBLIC
@@ -149,11 +150,13 @@ http://$ADDRESS:$CERT_PORT {
         page = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Linkarium Android 连接</title>
 <style>body{font:17px/1.7 system-ui,sans-serif;max-width:680px;margin:40px auto;padding:0 24px;color:#182b48}li{margin:18px 0}code{overflow-wrap:anywhere;font-size:13px}a{color:#175de5}</style>
-<h1>Linkarium Android 连接</h1><ol>
+<h1>Linkarium 服务器证书</h1>
+<p>此页面仅在服务器本机提供。请通过实物传输或受管理的设备配置将证书交给新设备，
+在新设备核对服务器终端显示的 SHA-256 指纹后安装。根证书会影响设备的 HTTPS 信任。</p><ol>
 <li><a href="/linkarium-ca.crt" download>下载 CA 证书</a></li>
 <li>在 Android 设置中搜索“安装证书”，选择“CA 证书”，安装下载的 linkarium-ca.crt。</li>
 <li><a href="ORIGIN/login">打开 Linkarium HTTPS</a></li>
-<li>使用电脑提供的添加链接和独立授权码创建 Passkey；首次使用该域名时，使用服务器终端提供的首次授权码。</li></ol>
+<li>使用电脑提供的添加链接和独立授权码创建 Passkey；首次使用该域名时，打开服务器终端提供的完整注册链接并输入授权码。</li></ol>
 <p>CA 证书 SHA-256：<br><code>FINGERPRINT</code></p></html>
 """.replace("ORIGIN", html.escape(self.origin, quote=True)).replace("FINGERPRINT", fingerprint)
         (self.public / "index.html").write_text(page, encoding="utf-8")

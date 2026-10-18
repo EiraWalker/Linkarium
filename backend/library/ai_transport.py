@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import re
 import time
@@ -16,6 +19,17 @@ MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_EXCERPT_CHARS = 6000
 MAX_BATCH_ITEMS = 10
 MAX_INPUT_CHARS = 48000
+_request_budget = ContextVar('ai_request_budget', default=None)
+
+
+@contextmanager
+def request_budget(reserve):
+    """Apply an operation's durable budget at the actual outbound request boundary."""
+    token = _request_budget.set(reserve)
+    try:
+        yield
+    finally:
+        _request_budget.reset(token)
 
 
 class AIError(ValueError):
@@ -34,6 +48,13 @@ def normalize_endpoint(base_url: str) -> str:
         if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
             raise ValueError
         host = parsed.hostname.encode("idna").decode("ascii").lower()
+        if parsed.scheme == "http":
+            try:
+                local = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                local = host == "localhost"
+            if not local:
+                raise AIError("AI_HTTPS_REQUIRED", "远程 AI 服务必须使用 HTTPS；HTTP 仅供本机服务使用")
         if ":" in host:
             host = f"[{host}]"
         port = parsed.port
@@ -43,6 +64,8 @@ def normalize_endpoint(base_url: str) -> str:
         if any(segment in {".", ".."} for segment in path.split("/")):
             raise ValueError
         return urlunsplit((parsed.scheme.lower(), host, path, "", ""))
+    except AIError:
+        raise
     except (ValueError, UnicodeError):
         raise AIError("AI_ENDPOINT_INVALID", "API address must be an HTTP(S) base URL without credentials") from None
 
@@ -107,11 +130,15 @@ class ChatClient:
             started = time.monotonic()
             try:
                 with performance.span("ai.request", category="ai"):
+                    reserve = _request_budget.get()
+                    if reserve is not None:
+                        reserve()
                     with httpx.Client(timeout=timeout, trust_env=False, follow_redirects=False,
                                       transport=self.transport) as client:
                         with client.stream("POST", self.base_url + "/chat/completions", json=payload,
                                            headers={"Authorization": "Bearer " + self.api_key,
-                                                    "Accept": "application/json"}) as response:
+                                                    "Accept": "application/json",
+                                                    "Accept-Encoding": "identity"}) as response:
                             performance.emit("ai.response_headers", category="ai", http_status=response.status_code)
                             if response.status_code == 429:
                                 raise AIError("AI_RATE_LIMITED")
@@ -119,13 +146,26 @@ class ChatClient:
                                 raise AIError("AI_TEMPORARY_FAILURE")
                             if response.status_code != 200:
                                 raise AIError("AI_HTTP_REJECTED")
+                            if response.headers.get('Content-Encoding', '').strip().lower() not in ('', 'identity'):
+                                # Decode only the JSON envelope. Automatic HTTP
+                                # decompression can allocate beyond the byte budget
+                                # or consume a stream without yielding any bytes.
+                                raise AIError('AI_INVALID_RESULT', 'AI response must use identity content encoding')
+                            if time.monotonic() - started > self.total_timeout:
+                                raise AIError("AI_TIMEOUT")
                             body = bytearray()
-                            for chunk in response.iter_bytes():
-                                body.extend(chunk)
-                                if len(body) > MAX_RESPONSE_BYTES:
-                                    raise AIError("AI_RESPONSE_TOO_LARGE")
+                            # MockTransport can return an already buffered response;
+                            # actual network responses stay raw and are checked at
+                            # every read, without waiting to fill a chunk buffer.
+                            chunks = (response.content,) if response.is_stream_consumed else response.iter_raw()
+                            for chunk in chunks:
                                 if time.monotonic() - started > self.total_timeout:
                                     raise AIError("AI_TIMEOUT")
+                                if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
+                                    raise AIError("AI_RESPONSE_TOO_LARGE")
+                                body.extend(chunk)
+                            if time.monotonic() - started > self.total_timeout:
+                                raise AIError("AI_TIMEOUT")
                 with performance.span("ai.parse", category="ai", response_bytes=len(body)):
                     result = strict_json(body.decode("utf-8"))
                     choices = result.get("choices") if isinstance(result, dict) else None

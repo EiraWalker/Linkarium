@@ -9,6 +9,8 @@ import secrets
 import shutil
 import sqlite3
 import stat
+import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -27,6 +29,16 @@ MAX_EXPANDED_BYTES = 64 * 1024**3
 MAX_DATABASE_BYTES = 1024**3
 MAX_ARTIFACT_BYTES = MAX_CAPTURE_BYTES
 MAX_MANIFEST_BYTES = 16 * 1024**2
+# A full million-bookmark library remains supported. File-backed records share
+# the archive's existing member budget; orphan rows receive their own budget.
+MAX_FOLDER_ROWS = 100000
+MAX_BOOKMARK_ROWS = 1000000
+MAX_SNAPSHOT_ROWS = 1000000
+MAX_ORPHAN_ARTIFACT_ROWS = MAX_FILES - 2
+MAX_DATABASE_ROWS = 10000000
+MAX_SCHEMA_OBJECTS = 512
+RESTORE_CONFIRMATION_SECONDS = 3600
+RESTORE_ORPHAN_SECONDS = 3600
 ARTIFACT_NAME = re.compile(r"artifacts/([0-9a-f]{2})/([0-9a-f]{64})\.html\Z")
 
 
@@ -75,6 +87,8 @@ def _connect_readonly(path, immutable=False):
     connection.execute("PRAGMA trusted_schema=OFF")
     connection.execute("PRAGMA query_only=ON")
     connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA mmap_size=0")
+    connection.execute("PRAGMA cache_size=-8192")
     try:
         yield connection
     finally:
@@ -90,9 +104,12 @@ def schema_signature(path):
 
 def _validate_database(path, *, expected_schema=None):
     with _connect_readonly(path, immutable=True) as connection:
-        schema = {(kind, name, table): " ".join(sql.split()) if sql else None
-                  for kind, name, table, sql in connection.execute(
-                      "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")}
+        schema = {}
+        for kind, name, table, sql in connection.execute(
+                "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"):
+            if len(schema) >= MAX_SCHEMA_OBJECTS or (sql and len(sql) > 1024 * 1024):
+                raise MaintenanceError("BACKUP_SCHEMA_UNSAFE")
+            schema[kind, name, table] = " ".join(sql.split()) if sql else None
         for (kind, name, table), sql in schema.items():
             if kind not in {"table", "index"} or not (table.startswith("library_") or table == "django_migrations"):
                 raise MaintenanceError("BACKUP_SCHEMA_UNSAFE", "Backup contains unsupported database objects")
@@ -110,14 +127,35 @@ def _validate_database(path, *, expected_schema=None):
         required = {"library_bookmark", "library_folder", "library_artifact", "library_snapshotversion", "library_capturestate"}
         if not required.issubset(tables):
             raise MaintenanceError("BACKUP_SCHEMA_INCOMPATIBLE")
+        row_counts, total_rows = {}, 0
+        for table in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            count = connection.execute("SELECT count(*) FROM " + quoted).fetchone()[0]
+            row_counts[table] = count
+            total_rows += count
+            limit = {"library_folder": MAX_FOLDER_ROWS, "library_bookmark": MAX_BOOKMARK_ROWS,
+                     "library_snapshotversion": MAX_SNAPSHOT_ROWS,
+                     "library_artifact": MAX_FILES - 2 + MAX_ORPHAN_ARTIFACT_ROWS}.get(table, MAX_DATABASE_ROWS)
+            if count > limit or total_rows > MAX_DATABASE_ROWS:
+                raise MaintenanceError("BACKUP_ROW_LIMIT", "Backup exceeds the supported library record budget")
+        # Only this bounded graph is retained. Mark proven paths once so a wide
+        # or deeply shared folder tree takes O(rows * maximum depth), not O(rows²).
         folders = dict(connection.execute("SELECT id,parent_id FROM library_folder"))
+        depths = {}
         for folder_id in folders:
-            current, seen = folder_id, set()
-            while current is not None:
-                if current in seen or current not in folders or len(seen) >= 32:
+            current, seen, chain = folder_id, set(), []
+            while current is not None and current not in depths:
+                if current in seen or current not in folders or len(chain) >= 32:
                     raise MaintenanceError("BACKUP_FOLDER_INVALID")
                 seen.add(current)
+                chain.append(current)
                 current = folders[current]
+            depth = depths.get(current, 0)
+            for item in reversed(chain):
+                depth += 1
+                if depth > 32:
+                    raise MaintenanceError("BACKUP_FOLDER_INVALID")
+                depths[item] = depth
         if connection.execute("SELECT canonical_url FROM library_bookmark GROUP BY canonical_url HAVING count(*)>1").fetchone():
             raise MaintenanceError("BACKUP_URL_DUPLICATE")
         bad_pointer = connection.execute("""SELECT c.id FROM library_capturestate c
@@ -129,17 +167,18 @@ def _validate_database(path, *, expected_schema=None):
             raise MaintenanceError("BACKUP_VARIANT_INVALID")
         # Orphans remain in a backed-up database even though their files are omitted.
         # Validate every row: a malicious orphan path must never reach file cleanup.
-        all_artifacts = list(connection.execute("SELECT sha256,relative_path,byte_size FROM library_artifact"))
-        for artifact_hash, relative_path, size in all_artifacts:
+        for artifact_hash, relative_path, size in connection.execute("SELECT sha256,relative_path,byte_size FROM library_artifact"):
             if (not isinstance(artifact_hash, str) or re.fullmatch(r"[0-9a-f]{64}", artifact_hash) is None or
                     relative_path != f"artifacts/{artifact_hash[:2]}/{artifact_hash}.html" or
                     not isinstance(size, int) or size < 0 or size > MAX_ARTIFACT_BYTES):
                 raise MaintenanceError("BACKUP_ARTIFACT_INVALID")
         artifacts = list(connection.execute("""SELECT DISTINCT a.sha256,a.relative_path,a.byte_size
             FROM library_artifact a JOIN library_snapshotversion s ON s.artifact_id=a.sha256"""))
-        counts = {"bookmarks": connection.execute("SELECT count(*) FROM library_bookmark").fetchone()[0],
+        if len(artifacts) > MAX_FILES - 2 or row_counts["library_artifact"] - len(artifacts) > MAX_ORPHAN_ARTIFACT_ROWS:
+            raise MaintenanceError("BACKUP_ROW_LIMIT")
+        counts = {"bookmarks": row_counts["library_bookmark"],
                   "folders": len(folders), "artifacts": len(artifacts),
-                  "snapshots": connection.execute("SELECT count(*) FROM library_snapshotversion").fetchone()[0],
+                  "snapshots": row_counts["library_snapshotversion"],
                   "desktop_snapshots": connection.execute("SELECT count(*) FROM library_snapshotversion WHERE variant='desktop'").fetchone()[0],
                   "mobile_snapshots": connection.execute("SELECT count(*) FROM library_snapshotversion WHERE variant='mobile'").fetchone()[0]}
     return artifacts, counts
@@ -200,7 +239,131 @@ def create_backup(generation_dir, output_path, *, expected_schema=None):
         return {"manifest": manifest, "byte_size": output_path.stat().st_size, "sha256": digest(output_path)}
 
 
-def validate_package(package_path, candidate_dir, *, expected_schema=None, expanded_limit=MAX_EXPANDED_BYTES):
+def _reject_links(path):
+    path = Path(path).absolute()
+    for current in (path, *path.parents):
+        if current.is_symlink() or current.is_junction():
+            raise MaintenanceError("BACKUP_UNSAFE_PATH")
+    return path
+
+
+def _clear_candidate(candidate_dir, *, remove_root=False):
+    """Remove only the already-owned candidate; never traverse a replacement link."""
+    candidate_dir = _reject_links(candidate_dir)
+    if not candidate_dir.exists():
+        return
+    for item in candidate_dir.iterdir():
+        if item.is_symlink() or item.is_junction() or not item.is_dir():
+            item.unlink(missing_ok=True) if not item.is_junction() else item.rmdir()
+        else:
+            shutil.rmtree(item)
+    if remove_root:
+        candidate_dir.rmdir()
+
+
+def _isolated_validation(action, *, expected_schema=None, **arguments):
+    """The supervisor receives only a bounded status, never SQLite rows."""
+    from config.paths import DATA_ROOT, PROJECT_ROOT
+    from .maintenance_worker import WALL_SECONDS
+    request = {"action": action, **arguments}
+    if expected_schema is not None:
+        request["expected_schema"] = (str(Path(expected_schema).absolute()) if isinstance(expected_schema, (str, Path))
+                                       else [[key, value] for key, value in expected_schema.items()])
+    environment = dict(os.environ, BOOKMARK_DATA_ROOT=str(DATA_ROOT), PYTHONPATH=str(PROJECT_ROOT / "backend"))
+    options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
+    child = subprocess.Popen([sys.executable, "-X", "utf8", "-m", "runtime.maintenance_worker"],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             cwd=PROJECT_ROOT, env=environment, **options)
+    try:
+        output, _ = child.communicate(json.dumps(request).encode(), timeout=WALL_SECONDS)
+    except BaseException as error:
+        if os.name != "nt":
+            import signal
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            child.kill()
+        child.communicate()
+        if isinstance(error, subprocess.TimeoutExpired):
+            raise MaintenanceError("RESTORE_RESOURCE_LIMIT", "Restore validation exceeded its time budget") from None
+        raise
+    try:
+        result = json.loads(output) if len(output) <= 4096 else {}
+    except (ValueError, UnicodeError):
+        result = {}
+    if child.returncode or not isinstance(result, dict) or result.get("ok") is not True:
+        code = result.get("error", "RESTORE_RESOURCE_LIMIT") if isinstance(result, dict) else "RESTORE_RESOURCE_LIMIT"
+        raise MaintenanceError(code, "Restore validation failed or exceeded its resource budget")
+    return result.get("manifest")
+
+
+def _manifest_summary(manifest):
+    # File inventories stay in the package/candidate, not in every runtime row
+    # or HTTP polling response for an operation that has already finished.
+    return {key: value for key, value in manifest.items() if key != "files"}
+
+
+def _candidate_manifest(candidate_dir):
+    path = _safe_file(candidate_dir, "manifest.json")
+    if not path.is_file() or path.stat().st_size > MAX_MANIFEST_BYTES:
+        raise MaintenanceError("BACKUP_MANIFEST_INVALID")
+    try:
+        from library.ai_transport import strict_json, AIError
+        return strict_json(path.read_text(encoding="utf-8"))
+    except (UnicodeError, AIError):
+        raise MaintenanceError("BACKUP_MANIFEST_INVALID") from None
+
+
+def validate_package(package_path, candidate_dir, *, expected_schema=None, expanded_limit=MAX_EXPANDED_BYTES,
+                     expected_sha256=None, summary=False):
+    """Validate untrusted bytes under OS memory/CPU limits and a wall deadline."""
+    candidate_dir = _reject_links(candidate_dir)
+    if candidate_dir.exists() and any(candidate_dir.iterdir()):
+        raise MaintenanceError("RESTORE_CANDIDATE_NOT_EMPTY")
+    candidate_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        manifest = _isolated_validation("package", package=str(Path(package_path).absolute()), candidate=str(candidate_dir),
+                                        expected_schema=expected_schema, expanded_limit=expanded_limit, expected_sha256=expected_sha256)
+        return manifest if summary else _candidate_manifest(candidate_dir)
+    except BaseException:
+        _clear_candidate(candidate_dir)
+        raise
+
+
+def validate_database_isolated(database, *, expected_schema=None):
+    _isolated_validation("database", database=str(Path(database).absolute()), expected_schema=expected_schema)
+
+
+def validate_candidate(candidate_dir, *, expected_schema=None, prepare=False, summary=False):
+    """Recheck preview bytes and optionally cancel restored work in the child."""
+    candidate_dir = _reject_links(candidate_dir)
+    manifest = _isolated_validation("candidate", candidate=str(candidate_dir), expected_schema=expected_schema, prepare=prepare)
+    return manifest if summary else _candidate_manifest(candidate_dir)
+
+
+def _validate_candidate(candidate_dir, *, expected_schema=None, prepare=False):
+    candidate_dir = _reject_links(candidate_dir)
+    manifest = _candidate_manifest(candidate_dir)
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), dict) or len(manifest["files"]) >= MAX_FILES:
+        raise MaintenanceError("BACKUP_MANIFEST_INVALID")
+    for name, info in manifest["files"].items():
+        candidate_file = _safe_file(candidate_dir, name)
+        if candidate_file.stat().st_size != info["size"] or digest(candidate_file) != info["sha256"]:
+            raise MaintenanceError("RESTORE_CANDIDATE_CHANGED")
+    artifacts, counts = _validate_database(candidate_dir / "library.sqlite3", expected_schema=expected_schema)
+    if (counts != manifest["counts"] or set(manifest["files"]) != {"library.sqlite3"} | {name for _, name, _ in artifacts}):
+        raise MaintenanceError("BACKUP_MANIFEST_INVALID")
+    for artifact_hash, name, size in artifacts:
+        if manifest["files"][name] != {"sha256": artifact_hash, "size": size}:
+            raise MaintenanceError("BACKUP_ARTIFACT_INVALID")
+    if prepare:
+        _cancel_candidate_work(candidate_dir / "library.sqlite3")
+    return manifest
+
+
+def _validate_package(package_path, candidate_dir, *, expected_schema=None, expanded_limit=MAX_EXPANDED_BYTES):
     with performance.span("maintenance.validate_package", category="maintenance"):
         candidate_dir = Path(candidate_dir)
         if candidate_dir.is_symlink() or (candidate_dir.exists() and any(candidate_dir.iterdir())):
@@ -239,6 +402,13 @@ def validate_package(package_path, candidate_dir, *, expected_schema=None, expan
                 if not isinstance(manifest, dict) or set(manifest) != required or manifest["format"] != FORMAT or (
                         manifest["format_version"] != FORMAT_VERSION or manifest["schema_version"] != SCHEMA_VERSION):
                     raise MaintenanceError("BACKUP_VERSION_UNSUPPORTED")
+                if (not isinstance(manifest["created_at"], str) or len(manifest["created_at"]) > 80 or
+                        not isinstance(manifest["source_generation"], str) or
+                        re.fullmatch(r"[A-Za-z0-9_-]{1,80}", manifest["source_generation"]) is None or
+                        not isinstance(manifest["counts"], dict) or
+                        set(manifest["counts"]) != {"bookmarks", "folders", "artifacts", "snapshots", "desktop_snapshots", "mobile_snapshots"} or
+                        any(type(count) is not int or count < 0 or count > MAX_DATABASE_ROWS for count in manifest["counts"].values())):
+                    raise MaintenanceError("BACKUP_MANIFEST_INVALID")
                 files = manifest["files"]
                 if not isinstance(files, dict) or set(files) != names - {"manifest.json"}:
                     raise MaintenanceError("BACKUP_MANIFEST_INVALID")
@@ -326,11 +496,13 @@ def create_restore_validation(chunks):
         stage="uploaded", expected_library_epoch=state.library_epoch, old_generation=state.active_generation,
         target_generation="restore-" + uuid.uuid4().hex)
     path = DATA_ROOT / "work" / (str(operation.id) + ".bookmarklib.zip")
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     chunks = [chunks] if isinstance(chunks, bytes) else chunks
-    size, checksum = 0, hashlib.sha256()
+    size, checksum, created = 0, hashlib.sha256(), False
     try:
+        _reject_links(path)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with path.open("xb") as output:
+            created = True
             for chunk in chunks:
                 size += len(chunk)
                 if size > MAX_EXPANDED_BYTES:
@@ -341,7 +513,8 @@ def create_restore_validation(chunks):
         operation.save(using="default", update_fields=["source_package", "package_sha256", "state", "updated_at"])
         return operation
     except BaseException:
-        path.unlink(missing_ok=True)
+        if created:
+            path.unlink(missing_ok=True)
         MaintenanceOperation.objects.using("default").filter(pk=operation.id).update(state="failed", error_code="UPLOAD_FAILED")
         raise
 
@@ -382,7 +555,9 @@ def _claim(operation_id, *, validating=False):
 
 
 def _set_stage(operation, stage, **fields):
+    from django.utils import timezone
     from .models import MaintenanceOperation
+    fields.setdefault("updated_at", timezone.now())
     MaintenanceOperation.objects.using("default").filter(pk=operation.id, claim_token=operation.claim_token).update(
         stage=stage, **fields)
     operation.stage = stage
@@ -452,17 +627,16 @@ def process_operation(operation_id, *, stop_services, start_services, ready_serv
             if validating:
                 _set_stage(operation, "validating_package")
                 source = Path(operation.source_package)
-                if digest(source) != operation.package_sha256:
-                    raise MaintenanceError("RESTORE_PACKAGE_CHANGED")
                 candidate = generation_root(operation.target_generation)
                 manifest = validate_package(source, candidate,
-                    expected_schema=generation_root(old_generation) / "library.sqlite3")
+                    expected_schema=generation_root(old_generation) / "library.sqlite3", expected_sha256=operation.package_sha256,
+                    summary=True)
                 import hmac
                 token = hmac.new(settings.SECRET_KEY.encode(), (str(operation.id) + "\n" + operation.package_sha256 +
                     "\n" + str(operation.expected_library_epoch)).encode(), hashlib.sha256).hexdigest()
                 _set_stage(operation, "awaiting_confirmation", state="awaiting_confirmation", active_key=None,
                     claim_token=None, validation_token_hash=hashlib.sha256(token.encode()).hexdigest(),
-                    validation_expires_at=timezone.now() + timedelta(hours=1), result={"manifest": manifest})
+                    validation_expires_at=timezone.now() + timedelta(seconds=RESTORE_CONFIRMATION_SECONDS), result={"manifest": manifest})
                 return True
             state = RuntimeState.objects.using("default").get(pk=1)
             if operation.expected_library_epoch != state.library_epoch:
@@ -475,6 +649,7 @@ def process_operation(operation_id, *, stop_services, start_services, ready_serv
                 _set_stage(operation, "creating_backup")
                 output = DATA_ROOT / "backups" / (str(operation.id) + ".bookmarklib.zip")
                 result = create_backup(generation_root(old_generation), output)
+                result["manifest"] = _manifest_summary(result["manifest"])
                 result["package_path"] = str(output)
                 _set_stage(operation, "starting_services", result=result)
                 start_services()
@@ -487,15 +662,11 @@ def process_operation(operation_id, *, stop_services, start_services, ready_serv
                 if not prebackup.exists():
                     create_backup(generation_root(old_generation), prebackup)
                 candidate = generation_root(operation.target_generation)
-                # The candidate may have been modified after preview; revalidate all bytes.
-                manifest = json.loads((candidate / "manifest.json").read_text(encoding="utf-8"))
-                for name, info in manifest["files"].items():
-                    candidate_file = _safe_file(candidate, name)
-                    if candidate_file.stat().st_size != info["size"] or digest(candidate_file) != info["sha256"]:
-                        raise MaintenanceError("RESTORE_CANDIDATE_CHANGED")
-                _validate_database(candidate / "library.sqlite3", expected_schema=generation_root(old_generation) / "library.sqlite3")
                 _set_stage(operation, "preparing_candidate")
-                _cancel_candidate_work(candidate / "library.sqlite3")
+                # Confirmation does not make SQLite trusted: revalidation and
+                # imported-job cancellation share the same process budgets.
+                manifest = validate_candidate(candidate,
+                    expected_schema=generation_root(old_generation) / "library.sqlite3", prepare=True, summary=True)
                 from django.contrib.sessions.models import Session
                 with transaction.atomic(using="default"):
                     state = RuntimeState.objects.using("default").get(pk=1)
@@ -538,3 +709,13 @@ def process_operation(operation_id, *, stop_services, start_services, ready_serv
             except BaseException:
                 _set_stage(operation, "rollback_failed", state="failed", error_code="RESTORE_ROLLBACK_FAILED", active_key=None, claim_token=None)
             return False
+        finally:
+            # Staging is not part of the durable backup/rollback contract.
+            # Cleanup failures are retried by the supervisor's periodic sweep.
+            try:
+                cleanup_restore_data()
+            except (OSError, MaintenanceError):
+                performance.emit("maintenance.cleanup_failed", category="maintenance", maintenance_id=str(operation.id))
+
+
+from .maintenance_retention import cleanup_restore_data, cancel_restore

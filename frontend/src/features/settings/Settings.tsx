@@ -382,6 +382,9 @@ function ProfileForm({
   return (
     <form onSubmit={save}>
       <ErrorNotice message={error || test.error} />
+      {profile?.endpoint_error_code && <p role="status">{profile.endpoint_error_code === "AI_HTTPS_REQUIRED"
+        ? "远程 AI 服务必须使用 HTTPS，请修改 API 地址、重新提供密钥并验证连接。"
+        : "API 地址或协议需要更新，请修改配置并重新验证连接。"}</p>}
       <div class={s.formGrid}>
         <Field label="配置名称">
           <input

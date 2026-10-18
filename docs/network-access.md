@@ -5,7 +5,7 @@ Windows 标准启动入口支持以下两种模式。网络适配器参数可省
 | 模式 | 启动选项 | 设置页入口 | 新设备 Passkey |
 | --- | --- | --- | --- |
 | 普通 HTTP | 默认 | 所选适配器 IPv4＋实际端口的访问链接、复制按钮和二维码 | 不提供；本机继续通过 localhost 登录 |
-| 局域网 HTTPS | `-LanHttps` | 固定 HTTPS 地址、设备授权二维码及“安装 CA 证书” | 安装并信任 CA 后可登记和登录 |
+| 局域网 HTTPS | `-LanHttps` | 固定 HTTPS 地址与设备授权二维码 | 经可信渠道安装并核验 CA 后可登记和登录 |
 
 ## 普通启动
 
@@ -29,7 +29,7 @@ Windows 标准启动入口支持以下两种模式。网络适配器参数可省
 
 安装器下载官方 Caddy 2.11.7 Windows amd64 ZIP，核对固定 SHA-256 后解压到项目的 `tools/caddy`。也可通过 `BOOKMARK_CADDY` 指定已有兼容 Caddy 程序。安装器不创建系统服务、不安装全局受信任 CA。
 
-首次没有保存配置时，默认 HTTPS 端口为 8443，证书安装页为 8081，域名为 `linkarium.<IPv4 的连字符形式>.sslip.io`，解析到所选网卡 IP。依赖正常域名解析；DNS 重绑定防护或本机代理的域名路由规则可能影响私网解析，可改用自己已能正确解析的局域网域名。
+首次没有保存配置时，默认 HTTPS 端口为 8443，服务器本机证书页为 `127.0.0.1:8081`，域名为 `linkarium.<IPv4 的连字符形式>.sslip.io`，解析到所选网卡 IP。依赖正常域名解析；DNS 重绑定防护或本机代理的域名路由规则可能影响私网解析，可改用自己已能正确解析的局域网域名。
 
 ```powershell
 .\scripts\start.ps1 -LanHttps -NetworkAdapter 'Wi-Fi' -HttpsPort 8443 -CertificatePort 8081
@@ -38,7 +38,7 @@ Windows 标准启动入口支持以下两种模式。网络适配器参数可省
 
 `-LanDomain` 只配置应用身份和证书，不替用户创建 DNS 记录。HTTPS、证书安装页和 Web 上游端口必须不同。保存过配置后，省略参数即复用原域名和端口。已有的 `-PasskeyOrigin` 必须与最终 HTTPS 来源一致。
 
-服务就绪后，终端显示 HTTPS 网站地址、公开 CA 证书的绝对路径和 HTTP 证书安装页地址。就绪检查通过实际域名的解析和网络路径验证 TLS 与应用响应；域名不可达时报告 DNS／代理、目标地址、端口和证书检查步骤。HTTPS 下电脑和手机统一使用该域名；旧 localhost 文档入口会引导到它。Web 上游只绑定 loopback，代理与证书安装页绑定所选 IPv4；同一 supervisor 管理它们，并维持单个采集 worker。
+服务就绪后，终端显示 HTTPS 地址、公开 CA 文件的绝对路径、SHA-256 指纹和服务器本机证书页。证书页只绑定 `127.0.0.1`，局域网不能访问。HTTPS 代理绑定所选 IPv4，Web 上游绑定 loopback；同一 supervisor 管理它们和单个采集 worker。就绪检查通过实际域名验证 TLS 与应用响应，不会降级为 HTTP。
 
 ## 防火墙
 
@@ -50,13 +50,13 @@ Windows 标准启动入口支持以下两种模式。网络适配器参数可省
 .\scripts\configure-network-firewall.ps1 -DataRoot 'E:\LinkariumData'
 ```
 
-脚本从活动实例的运行记录读取实际端口，检查服务器仍在运行及适配器 IP 未变化，只允许所选适配器、当前本机 IPv4 和 `LocalSubnet` 的 TCP 入站。普通模式放行实际 Web 端口；HTTPS 模式只放行 HTTPS 和证书安装页端口，不开放 loopback 上游。当前 Wi-Fi 即使标记为“公用网络”也无需改变整个网络类别。
+脚本从活动实例读取实际端口，检查服务器仍在运行及适配器 IP 未变化，只允许所选适配器、当前 IPv4 和 `LocalSubnet` 的 TCP 入站。普通模式放行 Web 端口，HTTPS 模式仅放行 HTTPS 端口；不开放本机证书页和上游。当前 Wi-Fi 即使标记为“公用网络”也无需改变整个网络类别。
 
 脚本不自动提权、不关闭防火墙，也不声明路由器客户端隔离已通过。切换端口或网卡后，检查并移除不再需要的旧 `Linkarium-LAN-*` 规则。
 
 ## 手机安装与添加设备
 
-电脑首次使用同一 HTTPS 域名时，也需要信任这份公开 CA。若浏览器提示证书不受信任，核对安装页的指纹后，可在服务器电脑执行以下命令，将 CA 加入当前 Windows 用户的受信任根证书库：
+电脑首次使用同一 HTTPS 域名时，也需要信任这份公开 CA。在服务器本机核对终端显示的 SHA-256 指纹后，可将 CA 加入当前 Windows 用户的受信任根证书库：
 
 ```powershell
 certutil -user -addstore Root .\data\runtime\lan-https\public\linkarium-ca.crt
@@ -64,12 +64,12 @@ certutil -user -addstore Root .\data\runtime\lan-https\public\linkarium-ca.crt
 
 使用独立数据目录时替换证书路径。该命令会修改当前用户的证书信任，启动脚本不会自动执行；Android 仍需在手机上单独安装。
 
-1. 手机和电脑连接同一 Wi-Fi。在电脑设置页，“安装 CA 证书”位于生成授权按钮右侧；打开它显示的 HTTP 证书安装页，在手机打开同一地址。
-2. 下载公开 CA 证书，在 Android 设置中搜索“安装证书”，选择“CA 证书”并安装。页面提供 CA 的 SHA-256 指纹，服务器终端同时给出对应公开证书文件的位置。具体设置入口可参考 [Android 证书管理](https://support.google.com/pixelphone/answer/2844832?hl=zh-Hans)。
-3. 电脑和手机打开同一 HTTPS 域名。首次为该域名登记 Passkey 时使用服务器终端提供的首次授权码；已有所有者及原凭据保留。
+1. 从服务器本机取得公开证书文件，通过实物传输或受管理的设备配置交给手机。使用服务器屏幕或另一条已认证渠道提供 SHA-256 指纹，不能把 HTTP 下载页及同页指纹当作独立验证。
+2. 手机核对证书指纹后，在 Android 设置中搜索“安装证书”，选择“CA 证书”并安装。根证书影响设备的 HTTPS 信任；具体系统入口见 [Android 证书管理](https://support.google.com/pixelphone/answer/2844832?hl=zh-Hans)。
+3. 电脑和手机使用同一 HTTPS 域名。首次登记时打开服务器终端提供的完整注册链接并输入独立授权码；已有所有者及原凭据保留。
 4. 已登录电脑在设置页生成新设备授权。手机扫描添加链接二维码，另行输入独立授权码并创建 Passkey。新设备授权继续五分钟有效、一次成功使用后失效。
 
-HTTP 安装页只提供公开 CA 和安装说明，不提供授权码、授权令牌、私钥或数据库。安装证书按钮不重新签发授权。普通模式不显示此按钮。
+服务器本机证书页只提供公开证书和说明；不提供授权码、令牌、私钥或数据库。设置页不再提供局域网 HTTP 安装入口。
 
 ## 复用、接管与地址变化
 

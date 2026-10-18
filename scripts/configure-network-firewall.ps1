@@ -19,7 +19,6 @@ $address = Get-NetIPAddress -InterfaceAlias $connection.adapter -AddressFamily I
 if (-not $address) { throw 'The selected adapter address has changed; correct the server configuration first.' }
 if ($connection.mode -notin 'http','lan_https') { throw 'Configure the firewall of the external HTTPS proxy separately.' }
 $ports = @(([uri]$connection.access_url).Port)
-if ($connection.mode -eq 'lan_https') { $ports += ([uri]$connection.certificate_url).Port }
 foreach ($port in ($ports | Select-Object -Unique)) {
     $rule = @{
         Name = "Linkarium-LAN-$($connection.ipv4.Replace('.', '-'))-TCP-$port"
