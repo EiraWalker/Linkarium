@@ -31,6 +31,9 @@ def build(ref, version, destination):
     npm = shutil.which("npm.cmd") or shutil.which("npm")
     if not npm:
         raise RuntimeError("npm is required to build the frontend")
+    uv = shutil.which("uv")
+    if not uv:
+        raise RuntimeError("uv is required to export the committed Python lockfile")
     destination.mkdir(parents=True, exist_ok=True)
     name = f"Linkarium-{version}-deploy"
     archive_paths = [destination / f"{name}.tar.gz", destination / f"{name}.zip"]
@@ -54,6 +57,8 @@ def build(ref, version, destination):
                     or (path.name.startswith(".env") and path.name != ".env.example")
                     or path.suffix.lower() in {".pem", ".key", ".p12", ".pfx", ".sqlite3", ".sqlite", ".db"}):
                 raise RuntimeError(f"Runtime or credential file in Git export: {relative}")
+        run([uv, "export", "--frozen", "--offline", "--no-dev", "--no-emit-project",
+             "--format", "requirements-txt", "--output-file", "deploy/requirements.lock", "--quiet"], package)
         run([npm, "ci", "--no-audit", "--no-fund", "--cache", str(destination / "npm-cache")], package / "frontend")
         run([npm, "run", "build"], package / "frontend")
         modules = (package / "frontend" / "node_modules").resolve()
@@ -80,6 +85,7 @@ def build(ref, version, destination):
             "application": "Linkarium", "version": version, "commit": commit, "git_tree": tree,
             "built_at": datetime.now(timezone.utc).isoformat(),
             "node_version": output(["node", "--version"], project),
+            "uv_version": output([uv, "--version"], project),
             "prebuilt_frontend": True, "includes_personal_data": False,
             "capture_mode": "isolated; host launcher configured separately",
             "source_url": f"https://github.com/EiraWalker/Linkarium/tree/{commit}",

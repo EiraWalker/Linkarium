@@ -13,7 +13,7 @@ GitHub Release 提供包含预构建前端的云服务器 deploy 包，服务器
 .\scripts\start.ps1 -DevelopmentCapture
 ```
 
-安装脚本会安装锁定依赖、构建前端、安装采集工具并离线准备数据库。服务就绪后，终端给出成功使用前不过期的初始化码，重启保留；用户打开网页、输入码并创建首个 Passkey。已有私钥可选传给 `setup.ps1 -PrivateKey`，保留原文件密钥初始化能力；详见[登录方式](../docs/authentication.md)。
+安装脚本会安装锁定依赖、构建前端、安装采集工具并离线准备数据库。服务就绪后，终端给出本次运行期间有效的初始化码；尚未登记首个 Passkey 时，每次重启都会签发新码并使旧码失效。用户打开网页、输入码并创建首个 Passkey。已有私钥可选传给 `setup.ps1 -PrivateKey`，保留原文件密钥初始化能力；详见[登录方式](../docs/authentication.md)。
 
 再次启动只需 start 脚本，访问终端打印的 `http://localhost:实际端口`；默认从 8000 寻找空闲端口，需要固定端口时附 `-Port 18765`。电脑和手机跨网络使用需部署同一个可访问的 HTTPS 域名，并设置 `BOOKMARK_PASSKEY_ORIGIN`；原始局域网 IP 不作为 Passkey 站点身份。需要密码调试时，安装和启动脚本均加 `-DebugAuth`。
 

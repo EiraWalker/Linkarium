@@ -76,10 +76,10 @@ docker compose --env-file deploy/cloud/.env -f deploy/cloud/compose.yaml up -d -
 
 ## 重新制作包
 
-在 Git 仓库根目录，用 Python 3.13 和 Node.js 24 执行：
+在 Git 仓库根目录，准备 uv、Python 3.13 和 Node.js 24 后执行：
 
 ```sh
 python scripts/build-deploy.py --ref HEAD --version v0.1.0
 ```
 
-脚本仅导出指定 Git commit 的文件，在临时目录执行锁定依赖安装和前端构建，输出 `output/releases/v0.1.0/` 中的 `.tar.gz`、`.zip` 与外层 `SHA256SUMS.txt`。不会将工作区未提交文件、`data/`、`.env` 或本机虚拟环境带入包中。源码及其许可证随包保留，适用 AGPL-3.0-only。
+脚本仅导出指定 Git commit 的文件，从其 `uv.lock` 离线导出镜像依赖清单，并在临时目录执行锁定依赖安装和前端构建，输出 `output/releases/v0.1.0/` 中的 `.tar.gz`、`.zip` 与外层 `SHA256SUMS.txt`。不会将工作区未提交文件、`data/`、`.env` 或本机虚拟环境带入包中。源码及其许可证随包保留，适用 AGPL-3.0-only。
