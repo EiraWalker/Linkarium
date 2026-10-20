@@ -446,6 +446,26 @@ def route_request(request, route):
                         capture.next_due_at = capture.last_success_at + timedelta(seconds=config.default_refresh_seconds) if capture.last_success_at else now
                         capture.save(update_fields=["next_due_at"])
         return ok({"revision": config.revision, "tree_revision": config.tree_revision, "default_refresh_seconds": config.default_refresh_seconds, "ui_defaults": config.ui_defaults, "active_ai_profile_id": str(config.active_ai_profile_id) if config.active_ai_profile_id else None})
+    if parts[:2] == ["extension", "submissions"]:
+        from library import submissions
+        if len(parts) == 2:
+            require_method(request, "POST")
+            if not request.headers.get("Idempotency-Key"):
+                raise ApiError("IDEMPOTENCY_REQUIRED", "此操作需要请求唯一键")
+            data = payload(request)
+            def submit_page():
+                submission = submissions.submit(data)
+                return ok(submissions.serialize(submission), 202 if submission.created else 200)
+            return idempotent(request, data, submit_page)
+        if len(parts) == 3:
+            require_method(request, "GET")
+            return ok(submissions.serialize(submissions.get(parts[2])))
+        if len(parts) == 4 and parts[3] == "retry":
+            require_method(request, "POST")
+            if not request.headers.get("Idempotency-Key"):
+                raise ApiError("IDEMPOTENCY_REQUIRED", "此操作需要请求唯一键")
+            data = payload(request)
+            return idempotent(request, data, lambda: ok(submissions.serialize(submissions.retry(parts[2], data)), 202))
     if route == "bookmarks":
         require_method(request, "GET", "POST")
         if request.method == "GET":
@@ -560,7 +580,12 @@ def route_request(request, route):
                 ImportBatch.objects.filter(pk=job.target_id, stage="records", state__in=("queued", "running")).update(state="cancelled")
             return ok({"id": str(job.id), "state": "cancelled"})
         if parts[2] == "retry":
-            new = queue.retry_job(job.id)
+            if job.kind == "classification" and job.payload.get("submission_id"):
+                from library import submissions
+                submission = submissions.get(job.payload["submission_id"])
+                new = submissions.retry(submission.id, {"revision": submission.revision}).classification_job
+            else:
+                new = queue.retry_job(job.id)
             return ok({"job_id": str(new.id), "state": new.state}, 202)
     if parts[0] == "snapshots" and len(parts) == 3 and parts[2] == "thumbnail":
         require_method(request, "GET", "HEAD")

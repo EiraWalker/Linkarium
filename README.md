@@ -23,6 +23,7 @@
 - **HTML 页面快照**：分别保存桌面与手机版本，保留历史，支持定时刷新和文件夹批量刷新。
 - **AI 分类校对**：连接兼容 Chat Completions 的服务生成建议，经人工确认后创建目录并移动网站。
 - **导入与备份**：导入 Chrome / Firefox 书签 HTML；整库备份包含页面快照与历史，支持校验和覆盖恢复。
+- **Firefox 一键收藏插件**：向固定实例提交当前页的网址和标题，由后台 AI 自动归档；[构建、安装与验收边界](docs/firefox-extension.md)。
 - **Passkey 登录**：网页首次配置、多把凭据管理、二维码或链接添加新设备；当前已验证 Windows 与 Android Chrome ＋ Google 密码管理工具，Ed25519 私钥文件作为可选方式。
 
 技术栈为 Preact + TypeScript + Vite、Django + SQLite。前端构建后无需常驻 Node 服务，也无需 Redis 或独立数据库；Chromium 与 Monolith 按采集任务启动。

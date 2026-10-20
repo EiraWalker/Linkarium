@@ -189,6 +189,8 @@ def request_classification(bookmark_ids, profile_id=None, priority=50):
         raise ApiError("AI_UNCONFIGURED", "请先配置并验证 AI 服务")
     from .classification import verified_client
     verified_client(profile_id)
+    from .submissions import supersede
+    supersede(ids)
     # A new review replaces older work fully covered by this request. Otherwise
     # a late response from a previous full-library run could overwrite it.
     selected = set(ids)
@@ -316,6 +318,8 @@ def task_catalog(number=1, size=48):
                      "state": group_state(states), "total": sum(states.values()),
                      "completed": sum(states[s] for s in TERMINAL), "counts": states,
                      "pending_count": group.pending_count or 0}
+    from .submissions import annotate_groups
+    annotate_groups(details.values())
     return [details[identity] for identity in selected if identity in details], {
                   "active_count": active_count, "current_group": details.get(current_id),
                   "completion_revision": JobAttempt.objects.filter(finished_at__isnull=False).count(),
@@ -360,4 +364,6 @@ def group_status(group):
             else:
                 failed_sites += 1
         result.update(completed_sites=completed_sites, partial_sites=partial_sites, succeeded_sites=succeeded_sites, failed_sites=failed_sites, device_tasks={"total": len(jobs), "completed": completed, "counts": states})
+    from .submissions import annotate_groups
+    annotate_groups([result])
     return result

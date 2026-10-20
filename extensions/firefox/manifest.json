@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "收藏到 Linkarium",
+  "version": "0.1.0",
+  "description": "点击保存当前页的网址和标题到自己的 Linkarium，由后台 AI 自动归档。",
+  "permissions": ["activeTab", "storage", "scripting"],
+  "host_permissions": ["https://link.eirawav.me/*"],
+  "background": {"scripts": ["common.js", "background.js"]},
+  "action": {"default_title": "收藏到 Linkarium", "default_icon": "icon.svg"},
+  "icons": {"48": "icon.svg", "96": "icon.svg"},
+  "content_scripts": [{
+    "matches": ["https://link.eirawav.me/*"],
+    "js": ["common.js", "bridge.js"],
+    "run_at": "document_idle"
+  }],
+  "options_ui": {"page": "status.html", "open_in_tab": true},
+  "commands": {"show-status": {"suggested_key": {"default": "Alt+Shift+L"}, "description": "查看最近收藏和分类状态"}},
+  "incognito": "not_allowed",
+  "browser_specific_settings": {"gecko": {
+    "id": "linkarium@eirawav.me",
+    "strict_min_version": "140.0",
+    "data_collection_permissions": {"required": ["browsingActivity"]}
+  }}
+}

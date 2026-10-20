@@ -275,3 +275,23 @@ class BookmarkSource(models.Model):
     import_batch = models.ForeignKey(ImportBatch, null=True, on_delete=models.SET_NULL)
     source_folder_path = models.JSONField(default=list)
     source_title = models.CharField(max_length=500, blank=True)
+
+
+class ExtensionSubmission(Entity):
+    """Durable authority to automatically file one newly submitted bookmark."""
+    bookmark = models.ForeignKey(Bookmark, null=True, on_delete=models.SET_NULL)
+    created = models.BooleanField(default=True)
+    source = models.CharField(max_length=24, default="firefox-extension")
+    state = models.CharField(max_length=24, default="queued", db_index=True)
+    generation = models.CharField(max_length=64)
+    library_epoch = models.PositiveBigIntegerField()
+    expected_bookmark_revision = models.PositiveBigIntegerField(default=1)
+    expected_classification_revision = models.PositiveBigIntegerField(default=1)
+    expected_tree_revision = models.PositiveBigIntegerField(default=1)
+    group = models.ForeignKey(JobGroup, null=True, on_delete=models.SET_NULL)
+    metadata_job = models.ForeignKey(Job, null=True, on_delete=models.SET_NULL, related_name="metadata_submissions")
+    classification_job = models.ForeignKey(Job, null=True, on_delete=models.SET_NULL, related_name="classification_submissions")
+    proposal = models.ForeignKey(ClassificationProposal, null=True, on_delete=models.SET_NULL)
+    error_code = models.CharField(max_length=64, blank=True)
+    metadata_error_code = models.CharField(max_length=64, blank=True)
+    applied_at = models.DateTimeField(null=True)

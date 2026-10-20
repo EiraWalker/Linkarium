@@ -32,6 +32,7 @@ class WorkerSpoolReleaseTests(unittest.TestCase):
 
         with override_settings(BOOKMARK_CAPTURE_MODE='isolated', BOOKMARK_CAPTURE_SOCKET='/fixture'), \
                 patch('library.importing.advance_imports'), \
+                patch('library.submissions.advance_submissions'), \
                 patch.object(worker.queue, 'claim_next', return_value=(job, attempt)), \
                 patch.object(worker.queue, 'finish') as finish, \
                 patch.object(worker, 'heartbeat'), \

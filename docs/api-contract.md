@@ -84,6 +84,18 @@ BookmarkSummary 包含 `id,revision,title,url,domain,folder_path,tags,is_starred
 
 ## 4. 快照与任务
 
+### Firefox 插件提交
+
+`POST /api/v1/extension/submissions` 接受 `{url,title}`，要求 owner 会话、CSRF 和 `Idempotency-Key`，拒绝其他字段。新收藏返回 202；规范化 URL 已存在返回 200 和 `created=false,state=already_saved`，原字段和任务不变。同键同参复用原响应，同键异参返回幂等冲突。收藏、工作流和初始任务在同一业务事务登记。
+
+响应 `data` 含 `submission_id,bookmark_id,created,state,stage,group_id,status_url,folder_path,revision,error_code,error_message,metadata_error_code,can_retry,applied_at`。`GET /api/v1/extension/submissions/{id}` 只查询，不产生任务。状态为 queued/enriching/classifying/applying/classified/needs_attention/already_saved；202 不代表已归档。
+
+`POST /api/v1/extension/submissions/{id}/retry` 要求 `{revision}`、owner、CSRF 和幂等键；复用活动任务，收藏或目录版本失效时拒绝自动覆盖。AI 未配置或失败仍保留已保存收藏。
+
+插件流程的有效 AI 方案可自动应用；其余入口仍需人工确认。`kind=extension,source=firefox-extension` 的任务组在任务目录和详情附 `extension_submission`，组状态以实际归档结果为准，不能把元数据成功当作归档成功。具体交互见 [插件说明](firefox-extension.md)。
+
+### 快照与任务接口
+
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | POST | /bookmarks/{id}/refresh | 单站立即刷新，返回两设备任务；关闭快照时返回 skipped 原因 |

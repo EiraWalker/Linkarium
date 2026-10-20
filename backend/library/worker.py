@@ -185,8 +185,10 @@ def cleanup_capture_work(attempt):
 
 def run_one(prefer_background=False):
     from .importing import advance_imports
+    from .submissions import advance_submissions
     with performance.span("worker.advance_imports", category="worker"):
         advance_imports()
+        advance_submissions()
     claimed = queue.claim_next(prefer_background)
     if not claimed:
         return False
@@ -212,6 +214,10 @@ def run_one(prefer_background=False):
                     with performance.span("worker.publish_metadata", category="worker"):
                         publish_metadata(job, attempt, result)
             elif job.kind == "classification":
+                if job.payload.get("submission_id"):
+                    from .submissions import classify
+                    classify(job, attempt)
+                    return True
                 from .classification import generate_proposals
                 from .ai_transport import request_budget
                 from .importing import reserve_ai_request
@@ -258,6 +264,7 @@ def run_one(prefer_background=False):
                     print(f"job={job.id} staging_cleanup_deferred", flush=True)
             with performance.span("worker.advance_imports", category="worker"):
                 advance_imports()
+                advance_submissions()
             close_old_connections()
         return True
 
