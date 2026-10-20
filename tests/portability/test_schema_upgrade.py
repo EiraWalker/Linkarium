@@ -98,7 +98,7 @@ class PreviousSchemaTests(unittest.TestCase):
         cls.directory = tempfile.TemporaryDirectory(prefix='previous-bookmark-schema-')
         cls.root = Path(cls.directory.name)
         cls.current = cls.root / 'current'
-        cls.run_command(cls.current, 'migrate', 'library', TRUSTED_LIBRARY_MIGRATIONS[-1],
+        cls.run_command(cls.current, 'migrate', 'library',
                         '--database', 'library', '--noinput', '--verbosity', '0')
         cls.expected = cls.current / 'generations' / 'initial' / 'library.sqlite3'
         cls.enterClassContext(patch('config.paths.DATA_ROOT', cls.root / 'restore-runtime'))
@@ -160,8 +160,10 @@ class PreviousSchemaTests(unittest.TestCase):
         self.assertEqual(digest(generation / fixture['artifact']), fixture['sha256'])
         self.assertEqual(schema_signature(generation / 'library.sqlite3'), schema_signature(self.expected))
 
-    def test_each_released_schema_round_trips_to_current_with_saved_data_and_work_fenced(self):
-        for index, migration in enumerate(TRUSTED_LIBRARY_MIGRATIONS[:-1]):
+    def test_pre_budget_schemas_round_trip_to_current_with_saved_data_and_work_fenced(self):
+        # These releases need the import authorization reset in migration 0004.
+        previous_releases = ('0001_initial', '0002_import_workflow', '0003_classificationtaxonomy_folder_created_by_ai')
+        for index, migration in enumerate(previous_releases):
             with self.subTest(migration=migration), tempfile.TemporaryDirectory(dir=self.root) as directory:
                 root = Path(directory)
                 generation, fixture = self.old_library(root, migration)
@@ -184,6 +186,22 @@ class PreviousSchemaTests(unittest.TestCase):
                 with closing(sqlite3.connect(restored / 'library.sqlite3')) as connection:
                     self.assertEqual(connection.execute('SELECT enabled FROM library_aiprofile').fetchone()[0], 0)
                     self.assertEqual(connection.execute("SELECT count(*) FROM library_job WHERE state IN ('queued','running','retry_wait')").fetchone()[0], 0)
+
+    def test_v012_backup_restores_into_current_release_with_saved_bookmark(self):
+        with tempfile.TemporaryDirectory(dir=self.root) as directory:
+            root = Path(directory)
+            generation, fixture = self.old_library(root, '0004_import_execution_budgets')
+            package = root / 'v012.bookmarklib.zip'
+            create_backup(generation, package)
+            source_hash = digest(generation / 'library.sqlite3')
+            candidate = root / 'candidate'
+            validate_package(package, candidate, expected_schema=self.expected)
+            self.assertEqual(schema_signature(candidate / 'library.sqlite3'), schema_signature(self.expected))
+            self.assertEqual(digest(generation / 'library.sqlite3'), source_hash)
+            self.assertEqual(digest(candidate / fixture['artifact']), fixture['sha256'])
+            with closing(sqlite3.connect(candidate / 'library.sqlite3')) as connection:
+                bookmark = connection.execute('SELECT id,notes,folder_id,is_starred FROM library_bookmark').fetchone()
+                self.assertEqual(bookmark, (fixture['bookmark'], 'retain previous backup 中文', fixture['folder'], 1))
 
     def test_forged_migration_rows_cannot_skip_real_schema_upgrade(self):
         with tempfile.TemporaryDirectory(dir=self.root) as directory:
