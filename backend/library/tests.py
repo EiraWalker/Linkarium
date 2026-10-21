@@ -1,3 +1,4 @@
+from .testing_local_ai import bind_device, run_device, post as local_post
 from runtime.testing import force_credential_login
 import hashlib
 import json
@@ -25,6 +26,7 @@ class CatalogTests(TestCase):
         LibrarySettings.objects.create(pk=1)
         get_user_model().objects.create_user("owner", password="test-only-secret")
         force_credential_login(self.client, get_user_model().objects.get(username="owner"))
+        bind_device(self)
 
     def request_json(self, method, path, data=None, **extra):
         return getattr(self.client, method)("/api/v1/" + path, data=json.dumps(data or {}), content_type="application/json", **extra)
@@ -145,7 +147,7 @@ class CatalogTests(TestCase):
     def test_catalog_completion_revision_changes_on_success_and_retryable_error(self):
         bookmark = self.add()
         group = JobGroup.objects.create(kind="classification", requested_count=2)
-        queue.enqueue("classification", payload={"bookmark_ids": [str(bookmark.id)]}, group=group)
+        queue.enqueue("metadata", bookmark.id, payload={"bookmark_ids": [str(bookmark.id)]}, group=group)
         def version():
             return self.client.get("/api/v1/job-groups").json()["data"]["completion_revision"]
         self.assertEqual(version(), 0)
@@ -424,10 +426,12 @@ class CatalogTests(TestCase):
         self.assertIsNone(outside.folder_id)
 
     def test_all_sites_ai_requires_configured_service(self):
+        self.client.defaults.pop("HTTP_X_LINKARIUM_DEVICE")
+        self.client.defaults.pop("HTTP_X_LINKARIUM_DEVICE_PROOF")
         self.add()
         response = self.request_json("post", "classification/batches", {"folder_id": "all"})
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["error"]["code"], "AI_UNCONFIGURED")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "LOCAL_DEVICE_REQUIRED")
         self.assertFalse(Job.objects.filter(kind="classification").exists())
 
     def test_classification_progress_distinguishes_sites_batches_and_retries(self):
@@ -468,7 +472,7 @@ class CatalogTests(TestCase):
     def test_retry_wait_can_be_retried_immediately_without_duplicating_work(self):
         bookmark = self.add()
         group = JobGroup.objects.create(kind="classification", requested_count=1)
-        job = queue.enqueue("classification", priority=50, payload={"bookmark_ids": [str(bookmark.id)]}, group=group)
+        job = queue.enqueue("metadata", bookmark.id, priority=50, payload={"bookmark_ids": [str(bookmark.id)]}, group=group)
         shared = JobGroup.objects.create(kind="classification", requested_count=1)
         JobGroupMember.objects.create(group=shared, job=job)
         job, attempt = queue.claim_next()
@@ -484,7 +488,7 @@ class CatalogTests(TestCase):
         self.assertEqual((job.error_code, job.priority, job.attempt_count, job.active_attempt_id), ("", 60, 1, None))
         repeated = self.request_json("post", f"jobs/{job.id}/retry")
         self.assertEqual(repeated.json()["data"]["job_id"], str(job.id))
-        self.assertEqual(Job.objects.filter(kind="classification").count(), 1)
+        self.assertEqual(Job.objects.filter(kind="metadata").count(), 1)
         self.assertEqual(JobGroupMember.objects.filter(job=job).count(), 2)
         queue.finish(job, attempt, result={"late": True})
         job.refresh_from_db()
@@ -661,6 +665,7 @@ class ImportWorkflowTests(TestCase):
         LibrarySettings.objects.create(pk=1)
         user = get_user_model().objects.create_user("owner", password="test-only-secret")
         force_credential_login(self.client, user)
+        bind_device(self)
 
     def imported(self, count=1):
         from .importing import preview_import, start_import, import_plan
@@ -680,16 +685,22 @@ class ImportWorkflowTests(TestCase):
             queue.finish(job, attempt, error_code="CAPTURE_NETWORK" if fail else None)
 
     def ai(self):
-        from types import SimpleNamespace
-        profile = AIProfile.objects.create(name="Test AI", base_url="https://example.org/v1", model="test")
-        LibrarySettings.objects.filter(pk=1).update(active_ai_profile_id=profile.id)
-        def complete(messages, **kwargs):
-            data = json.loads(messages[-1]["content"])
-            if data.get("task") == "plan_taxonomy":
-                return {"categories": [{"path": ["Reviewed"], "description": "All test websites"}]}
-            rows = data["websites"]
-            return {"items": [{"bookmark_id": row["bookmark_id"], "target": {"parent_folder_id": None, "new_segments": ["Reviewed"]}, "reason": "test suggestion"} for row in rows]}
-        return patch("library.classification.verified_client", return_value=(profile, SimpleNamespace(complete=complete)))
+        from contextlib import contextmanager
+        @contextmanager
+        def configured():
+            def complete(messages, **kwargs):
+                data = json.loads(messages[-1]["content"])
+                if data.get("task") == "plan_taxonomy":
+                    return {"categories": [{"path": ["Reviewed"], "description": "All test websites"}]}
+                return {"items": [{"bookmark_id": row["bookmark_id"], "target": data["categories"][0]["target"], "reason": "test suggestion"} for row in data["websites"]]}
+            self.complete = complete
+            yield
+        return configured()
+
+    def run_ai(self, limit=100):
+        run_device(self, self.complete, limit=limit)
+        from .importing import advance_imports
+        advance_imports()
 
     def test_upload_only_previews_and_explicit_execute_is_idempotent(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
@@ -742,26 +753,23 @@ class ImportWorkflowTests(TestCase):
             self.assertEqual(Job.objects.get(kind="classification").max_attempts, 1)
 
     def test_ai_unconfigured_produces_manual_review_with_failure_labels(self):
-        from .importing import advance_imports, serialize_import
+        from .importing import advance_imports
         batch = self.imported()
         self.finish_captures(fail=True)
         advance_imports()
-        advance_imports()
         batch.refresh_from_db()
-        result = serialize_import(batch)
-        self.assertEqual((batch.stage, batch.ai_status, result["progress"]), ("review", "skipped", 100))
-        self.assertEqual(result["capture_failed_sites"], 1)
-        self.assertEqual(ClassificationProposal.objects.count(), 1)
-        rows = self.client.get(f"/api/v1/classification/proposals?import_id={batch.id}").json()["data"]
-        self.assertTrue(rows[0]["manual"])
-        self.assertTrue(rows[0]["capture_failed"])
-        self.assertEqual(Folder.objects.count(), 0)
+        self.assertEqual((batch.stage, batch.ai_status), ("classification", "running"))
+        self.assertEqual(Job.objects.get(kind="classification").execution_state, "waiting_device")
+        self.assertFalse(ClassificationProposal.objects.exists())
+        self.assertFalse(Folder.objects.exists())
 
     def test_completed_import_is_not_restarted_and_notification_persists(self):
         from .importing import advance_imports, start_import
         batch = self.imported()
         self.finish_captures()
         advance_imports()
+        with self.ai():
+            self.run_ai()
         self.assertEqual(len(self.client.get("/api/v1/imports").json()["data"]), 1)
         response = self.client.post(f"/api/v1/imports/{batch.id}/review-notified", data="{}", content_type="application/json")
         self.assertEqual(response.status_code, 200)
@@ -779,8 +787,8 @@ class ImportWorkflowTests(TestCase):
             advance_imports()
             advance_imports()
             self.assertEqual(Job.objects.filter(kind="classification").count(), 2)
-            run_one()
-            run_one()
+            self.run_ai()
+            self.run_ai()
         batch.refresh_from_db()
         self.assertEqual((batch.stage, batch.ai_status), ("review", "succeeded"))
         self.assertEqual(Folder.objects.count(), 0)
@@ -801,15 +809,15 @@ class ImportWorkflowTests(TestCase):
         self.finish_captures()
         with self.ai():
             advance_imports()
-            run_one()
-            with patch("library.classification.generate_proposals", side_effect=AIError("AI_TIMEOUT")) as call:
-                run_one()
-                run_one()
-                self.assertEqual(call.call_count, 1)
+            self.run_ai(limit=2)
+            # Keep the completed first batch; a later permanent failure cancels only remaining work.
+            jobs = Job.objects.filter(kind="classification", state__in=queue.ACTIVE).order_by("created_at")
+            Job.objects.filter(pk=jobs.first().id).update(state="failed", error_code="AI_INVALID_RESULT")
+            advance_imports()
         batch.refresh_from_db()
         self.assertEqual((batch.stage, batch.ai_status), ("review", "partial"))
-        self.assertEqual(ClassificationProposal.objects.filter(batch__profile__isnull=False).count(), 10)
-        self.assertEqual(ClassificationProposal.objects.filter(batch__profile__isnull=True).count(), 11)
+        self.assertEqual(ClassificationProposal.objects.filter(batch__is_local=True).count(), 10)
+        self.assertEqual(ClassificationProposal.objects.filter(batch__is_local=False).count(), 11)
         self.assertFalse(Job.objects.filter(kind="classification", state__in=queue.ACTIVE).exists())
 
     def test_import_preserves_existing_records_and_settings(self):
@@ -857,12 +865,12 @@ class ImportWorkflowTests(TestCase):
             self.assertFalse(row["metadata_available"])
             self.assertEqual(row["source_folder_paths"], [["Browser", "Tools"]])
             return {"items": [{"bookmark_id": row["bookmark_id"], "target": {"parent_folder_id": None, "new_segments": ["Tools"]}, "reason": "URL and source folder"}]}
-        with patch("library.classification.verified_client", return_value=(profile, SimpleNamespace(complete=complete))):
-            advance_imports()
-            run_one()
+        advance_imports()
+        self.complete = complete
+        self.run_ai()
         batch.refresh_from_db()
         self.assertEqual(batch.ai_status, "succeeded")
-        self.assertIsNotNone(ClassificationProposal.objects.get().batch.profile_id)
+        self.assertTrue(ClassificationProposal.objects.get().batch.is_local)
 
 
 @override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
@@ -872,6 +880,7 @@ class TaxonomyTests(TestCase):
     def setUp(self):
         RuntimeState.objects.create(pk=1)
         LibrarySettings.objects.create(pk=1)
+        bind_device(self)
 
     def test_batches_share_a_durable_plan_and_cannot_invent_other_paths(self):
         from types import SimpleNamespace
@@ -889,16 +898,16 @@ class TaxonomyTests(TestCase):
                 return {"categories": [{"path": ["设计与创作", "三维美术"], "description": "CG、Blender、建模与动画"}]}
             target = {"parent_folder_id": None, "new_segments": ["CG & Visual", "Blender社区"]} if drift else data["categories"][0]["target"]
             return {"items": [{"bookmark_id": r["bookmark_id"], "target": target, "reason": "CG art"} for r in data["websites"]]}
-        with patch("library.classification.verified_client", return_value=(profile, SimpleNamespace(complete=complete))):
-            generate_proposals([s.id for s in sites[:10]])
-            generate_proposals([s.id for s in sites[10:20]])
-            self.assertEqual(sum(c.get("task") == "plan_taxonomy" for c in calls), 1)
-            self.assertEqual(ClassificationProposal.objects.filter(status="pending").count(), 20)
-            self.assertEqual(Folder.objects.count(), 0)
-            drift = True
-            with self.assertRaises(AIError):
-                generate_proposals([sites[20].id])
-            self.assertEqual(ClassificationProposal.objects.filter(status="pending").count(), 20)
+        queue.request_classification([site.id for site in sites[:20]])
+        run_device(self, complete)
+        self.assertEqual(sum(c.get("task") == "plan_taxonomy" for c in calls), 1)
+        self.assertEqual(ClassificationProposal.objects.filter(status="pending").count(), 20)
+        self.assertEqual(Folder.objects.count(), 0)
+        drift = True
+        queue.request_classification([sites[20].id])
+        with self.assertRaises(ApiError):
+            run_device(self, complete)
+        self.assertEqual(ClassificationProposal.objects.filter(status="pending").count(), 20)
 
     def test_plan_rejects_duplicate_names_deep_paths_and_excessive_categories(self):
         from .taxonomy import validate_plan
@@ -917,13 +926,14 @@ class TaxonomyTests(TestCase):
         from types import SimpleNamespace
         site = catalog.create_bookmark({"url": "https://example.org"}, schedule_initial=False)[0]
         profile = AIProfile.objects.create(base_url="https://example.org/v1", model="test")
-        with patch("library.classification.verified_client", return_value=(profile, SimpleNamespace())):
-            old_group = queue.request_classification([site.id], profile.id)
-            job, attempt = queue.claim_next()
-            batch = ClassificationBatch.objects.create(profile=profile, job_group=old_group, tree_revision=1)
-            proposal = ClassificationProposal.objects.create(batch=batch, bookmark=site,
-                expected_classification_revision=1, expected_tree_revision=1)
-            new_group = queue.request_classification([site.id], profile.id)
+        old_group = queue.request_classification([site.id], profile.id)
+        claim = local_post(self, "claim", {}).json()["data"]
+        job = Job.objects.get(pk=claim["job_id"])
+        attempt = JobAttempt.objects.get(pk=claim["attempt_id"])
+        batch = ClassificationBatch.objects.create(profile=profile, job_group=old_group, tree_revision=1)
+        proposal = ClassificationProposal.objects.create(batch=batch, bookmark=site,
+            expected_classification_revision=1, expected_tree_revision=1)
+        new_group = queue.request_classification([site.id], profile.id)
         job.refresh_from_db()
         proposal.refresh_from_db()
         self.assertEqual(job.state, "cancelled")

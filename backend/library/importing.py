@@ -359,13 +359,15 @@ def start_import(batch, confirmation_token=None):
                 raise ApiError('IMPORT_WORKLOAD_LIMIT', '导入工作量超过配额', 409)
             if type(batch).objects.exclude(pk=batch.pk).filter(state__in=('queued', 'running')).exists():
                 raise ApiError('IMPORT_BUSY', '已有导入正在执行，请等待完成', 409)
+            from .local_ai import require_device
+            batch.execution_device_id = require_device()
             batch.confirmation_digest = confirmed['digest']
             batch.execution_authorization = confirmation_token
             batch.valid = confirmed['entries']
             batch.capture_budget, batch.ai_budget = confirmed['captures'], confirmed['ai_requests']
             queue.enqueue("import", batch.id, priority=60, active_key=f"import:{batch.id}")
             batch.state = "queued"
-            batch.save(update_fields=["state", 'confirmation_digest', 'execution_authorization', 'valid', 'capture_budget', 'ai_budget'])
+            batch.save(update_fields=["state", 'confirmation_digest', 'execution_authorization', 'valid', 'capture_budget', 'ai_budget', 'execution_device_id'])
     return batch
 
 
@@ -391,7 +393,6 @@ def advance_imports():
     from django.db import transaction
     from . import queue
     from .catalog import library_settings
-    from .classification import verified_client
     from .models import ImportBatch, Job, JobGroup
     if queue.runtime_state().maintenance_mode:
         return
@@ -409,19 +410,15 @@ def advance_imports():
             if batch.stage == "captures":
                 if Job.objects.filter(memberships__group_id=batch.capture_group_id, state__in=queue.ACTIVE).exists():
                     continue
-                profile_id = library_settings().active_ai_profile_id
-                try:
-                    if ids:
-                        verified_client(profile_id)
-                except Exception as error:
-                    batch.ai_status, batch.ai_error_code = "skipped", getattr(error, "code", "AI_UNAVAILABLE")
+                if ids and not batch.execution_device_id:
+                    batch.ai_status, batch.ai_error_code = "skipped", "LOCAL_DEVICE_REQUIRED"
                 else:
                     if ids:
                         group = JobGroup.objects.create(kind="classification", source="import", requested_count=len(ids))
                         batch.classification_group = group
                         for offset in range(0, len(ids), 10):
                             job = queue.enqueue("classification", priority=30, payload={"bookmark_ids": [str(i) for i in ids[offset:offset+10]],
-                                "profile_id": str(profile_id), "group_id": str(group.id), "import_id": str(batch.id)}, group=group)
+                                "device_id": str(batch.execution_device_id), "group_id": str(group.id), "import_id": str(batch.id)}, group=group)
                             Job.objects.filter(pk=job.id).update(max_attempts=1)
                         batch.stage, batch.ai_status = "classification", "running"
                         batch.save()

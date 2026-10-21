@@ -12,6 +12,7 @@ from runtime.testing import force_credential_login
 from .models import LibrarySettings
 from .worker import run_one
 from tests.run_ai_acceptance_provider import Handler
+from .testing_local_ai import bind_device, run_device, post
 
 
 class ExtensionSubmissionTests(TestCase):
@@ -22,6 +23,7 @@ class ExtensionSubmissionTests(TestCase):
         LibrarySettings.objects.create(pk=1)
         user = get_user_model().objects.create_user("owner")
         force_credential_login(self.client, user)
+        bind_device(self)
 
     def submit(self, key="first-click", **fields):
         return self.client.post("/api/v1/extension/submissions",
@@ -38,14 +40,14 @@ class ExtensionSubmissionTests(TestCase):
         thread.start()
         self.addCleanup(provider.server_close)
         self.addCleanup(provider.shutdown)
-        response = self.json_request("post", "ai-profiles", {
-            "base_url": f"http://127.0.0.1:{provider.server_port}/v1",
-            "model": "protocol-fixture", "api_key": "ui-fixture-key"})
-        self.assertEqual(response.status_code, 201, response.content)
-        profile_id = response.json()["data"]["id"]
-        self.json_request("post", f"ai-profiles/{profile_id}/test", {})
-        self.assertTrue(run_one())
+        from .ai_transport import ChatClient
+        self.model_client = ChatClient(f"http://127.0.0.1:{provider.server_port}/v1", "ui-fixture-key", "fixture", "json_object")
         return provider
+
+    def run_local(self):
+        run_device(self, self.model_client.complete)
+        from .submissions import advance_submissions
+        advance_submissions()
 
     def test_click_saves_a_retrievable_starred_bookmark_and_replays_the_submission(self):
         response = self.submit()
@@ -72,7 +74,7 @@ class ExtensionSubmissionTests(TestCase):
                 "title": "An article", "description": "Public page", "text_excerpt": "Art techniques"}):
             self.assertTrue(run_one())
         # The next job must classify the enriched page, independently of snapshots.
-        self.assertTrue(run_one())
+        self.run_local()
         status = self.client.get(saved["status_url"]).json()["data"]
         self.assertEqual(status["state"], "classified", status)
         self.assertEqual(status["folder_path"], "AI 协议验收 / 待校对")
@@ -87,14 +89,10 @@ class ExtensionSubmissionTests(TestCase):
         with patch("capture.LauncherClient.capture", return_value={"title": "An article"}):
             run_one()
         status = self.client.get(saved["status_url"]).json()["data"]
-        self.assertEqual(status["state"], "needs_attention")
-        self.assertEqual(status["error_code"], "AI_UNCONFIGURED")
+        self.assertEqual(status["state"], "classifying")
+        self.assertEqual(status["execution_state"], "waiting_device")
         self.configure_ai()
-        response = self.client.post(saved["status_url"] + "/retry",
-            data=json.dumps({"revision": status["revision"]}), content_type="application/json",
-            HTTP_IDEMPOTENCY_KEY="retry-after-configuration")
-        self.assertEqual(response.status_code, 202, response.content)
-        run_one()
+        self.run_local()
         self.assertEqual(self.client.get(saved["status_url"]).json()["data"]["state"], "classified")
         self.assertEqual(self.client.get("/api/v1/bookmarks").json()["page"]["total"], 1)
 
@@ -148,7 +146,7 @@ class ExtensionSubmissionTests(TestCase):
         saved = self.submit().json()["data"]
         with patch("capture.LauncherClient.capture", side_effect=CaptureError("access_denied", "Fixture denial")):
             run_one()
-        run_one()
+        self.run_local()
         status = self.client.get(saved["status_url"]).json()["data"]
         self.assertEqual(status["state"], "classified", status)
         self.assertEqual(status["metadata_error_code"], "CAPTURE_ACCESS_DENIED")
@@ -160,7 +158,7 @@ class ExtensionSubmissionTests(TestCase):
                 "url": "https://example.org/web-added", "snapshot_enabled": False}).json()["data"]
         with patch("capture.LauncherClient.capture", return_value={"title": "Web-added"}):
             run_one()
-        run_one()
+        self.run_local()
         unchanged = self.client.get(f'/api/v1/bookmarks/{bookmark["id"]}').json()["data"]
         self.assertIsNone(unchanged["folder_id"])
         proposals = self.client.get("/api/v1/classification/proposals", {
@@ -182,15 +180,14 @@ class ExtensionSubmissionTests(TestCase):
         saved = self.submit().json()["data"]
         with patch("capture.LauncherClient.capture", return_value={"title": "An article"}):
             run_one()
-        run_one()
-        status = self.client.get(saved["status_url"]).json()["data"]
-        self.assertEqual(status["state"], "needs_attention")
+        claim = post(self, "claim", {}).json()["data"]
+        self.assertEqual(post(self, "pause", {**claim, "error_code": "LOCAL_API_UNAVAILABLE"}).status_code, 200)
         group = self.client.get(f'/api/v1/job-groups/{saved["group_id"]}').json()["data"]
-        failed_job = next(row for row in group["jobs"] if row["state"] == "failed")
+        job = next(row for row in group["jobs"] if row.get("execution_state") == "paused")
         FlakyProvider.unavailable = False
-        response = self.json_request("post", f'jobs/{failed_job["id"]}/retry', {})
+        response = self.json_request("post", f'jobs/{job["id"]}/retry', {})
         self.assertEqual(response.status_code, 202, response.content)
-        run_one()
+        self.run_local()
         self.assertEqual(self.client.get(saved["status_url"]).json()["data"]["state"], "classified")
 
     def test_manual_classification_supersedes_automatic_filing_before_metadata_finishes(self):

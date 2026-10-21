@@ -211,7 +211,10 @@ def create_bookmark(data, *, schedule_initial=True):
         CaptureState.objects.create(bookmark=bookmark, variant=variant, next_due_at=timezone.now())
     from . import queue
     if schedule_initial:
-        transaction.on_commit(lambda: queue.initial_bookmark(bookmark.id), using="library")
+        from .local_ai import current_device
+        device = current_device.get()
+        device_id = str(device.id) if device else None
+        transaction.on_commit(lambda: queue.initial_bookmark(bookmark.id, device_id), using="library")
     return bookmark, True
 
 

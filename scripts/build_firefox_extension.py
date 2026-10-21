@@ -30,7 +30,7 @@ def main():
         manifest["content_scripts"][0]["matches"] = [pattern]
     destination = (args.output or EXTENSION / "artifacts" / ("linkarium-firefox-test.xpi" if args.test_origin else "linkarium-firefox-unsigned.xpi")).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    compiled = [EXTENSION / "dist" / (name + ".js") for name in ("common", "background", "bridge", "status")]
+    compiled = [EXTENSION / "dist" / (name + ".js") for name in ("common", "cloud", "model", "executor", "background", "bridge", "status")]
     if not all(path.is_file() for path in compiled):
         parser.error("compiled sources missing; run npm --prefix extensions/firefox run build")
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:

@@ -123,7 +123,7 @@ JobAttempt 是内部执行身份，启动、取消和 launcher 退出通知均�
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| POST | /classification/batches | 输入明确网站 ID 或 folder_id；folder_id="all" 对全库（包括未分类）生成候选任务，仍需已验证的 AI 服务和人工校对 |
+| POST | /classification/batches | 输入明确网站 ID 或 folder_id；folder_id="all" 对全库（包括未分类）生成候选任务，需可验证发起设备绑定，生成方案后仍需人工校对 |
 
 分类任务组 `total/completed/counts` 的单位是 AI 批次，每批最多 10 个网站。`website_total/website_completed` 为网站数量，`succeeded_sites/failed_sites/cancelled_sites/queued_sites/running_sites/retrying_sites` 细分网站状态；`jobs[].website_count` 为单批网站数量。没有运行中请求的待执行任务组返回 `queued`，全部活动请求均在等待重试时返回 `retry_wait`，不再统一显示为 `running`。
 
@@ -206,3 +206,24 @@ JobAttempt 是内部执行身份，启动、取消和 launcher 退出通知均�
 `REVISION_CONFLICT` 提供当前 revision；`PROPOSAL_STALE` 提供需重看的项目；`SNAPSHOT_DISABLED` 返回跳过原因；`CAPTURE_BLOCKED`、`CAPTURE_TIMEOUT`、`AI_UNCONFIGURED`、`AI_INVALID_RESULT` 等供前端映射可理解的文字，不展示内部实现细节。
 
 实施时将这些契约固化为 OpenAPI 文件和前后端共享样例，契约测试覆盖状态码、权限和业务不变量，不只检查返回 JSON 的字段拼写。
+
+
+## 7. 发起设备与本机分类协议（协议 1）
+
+所有本机端点均要求当前 owner 会话与写入 CSRF。先 POST `/local-ai/devices`，body 为 `{id,proof,name}`，设备 ID 为随机 UUID、proof 为本机随机秘密（32–200 字符）。runtime 只保留 proof 的 SHA-256，不回显原值；供应商 key 绝不传入此接口。登记不替代登录。
+
+后续绑定请求附 `X-Linkarium-Device` 和 `X-Linkarium-Device-Proof`。GET `/local-ai/device` 返回当前设备的 id/name/protocol/last_seen_at；错误 proof 返回 403。POST `/classification/batches`、`/imports/{id}/execute` 和分类任务重试要求有效绑定。网页或插件保存网址仍可在无绑定时成功，但不创建无主分类任务；旧插件需升级后对已保存收藏重新发起分类。
+
+| 方法 | 路径 | 行为 |
+| --- | --- | --- |
+| POST | /local-ai/claim | `{}` 只领取当前设备的任务；无工作返回 data:null；等待采集或共享规划返回 waiting:true/state。返回 request_id/job_id/stage/attempt_id/lease_token/prompt_digest/generation/library_epoch/messages/schema/timeout_seconds/protocol |
+| POST | /local-ai/claim | `{resume_request_id,has_response,manual_resume}` 在输入未变时轮换租约，恢复同一 prompt；已提交返回 completed:true 与 receipt。has_response 只说明是否缓存完整结果，不扩大发起设备授权 |
+| POST | /local-ai/heartbeat | 带 request_id/attempt_id/lease_token/prompt_digest，续约 180 秒；state 可为 waiting_upload |
+| POST | /local-ai/pause | 同一授权字段及有界 error_code，结束尝试并保留原设备等待状态 |
+| POST | /local-ai/result | 同一授权字段及 response（完整模型 JSON 文本，至多 512 KiB）。服务器严格解析及校验；阶段与业务副作用原子提交，返回 completed/result_digest 等收据 |
+
+同 request_id 同原始响应返回相同收据；不同内容返回 RESULT_CONFLICT。旧租约不能提交尚未确认的阶段；原设备恢复可在当前授权下提交未变化的缓存。完成确认仍受 owner、设备、generation/epoch 检查。取消、替代、人工编辑或切换收藏库使未提交结果失效。云端不是任意模型响应执行器：只接受已下发且仍有效的批次，不接受客户端自选网站、目录或自动应用策略。
+
+`jobs[].execution_device_id/execution_state` 与插件提交的同名字段说明设备和阶段；原 Job.state 继续用于汇总统计。阶段包括 waiting_materials、waiting_device、waiting_taxonomy、running、paused、storage_blocked、waiting_upload、review_ready、auto_applied、invalidated。缓存不可写时需原设备明确 manual_resume，不能自动重新推理。`LOCAL_DEVICE_REQUIRED` 表示必须绑定执行端；`LOCAL_EXECUTOR_REQUIRED` 表示旧任务需重新发起；`DEVICE_FORBIDDEN` 禁止其他设备恢复或提交。
+
+GET `/ai-profiles` 和 `/ai-profiles/{id}` 只读保留历史；POST/PATCH/测试返回 409 LOCAL_AI_ONLY，且不保存传入 key。云端不再以历史配置的启用或验证状态作为本机分类前提。导入预算在下发模型调用授权前扣减；缓存回传不扣减，重新授权未完成调用继续占用预算。

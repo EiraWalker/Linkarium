@@ -33,7 +33,8 @@ class LegacyImportBudgetMigrationTests(TransactionTestCase):
 
     def tearDown(self):
         try:
-            MigrationExecutor(self.connection).migrate([self.after])
+            executor = MigrationExecutor(self.connection)
+            executor.migrate(executor.loader.graph.leaf_nodes("library"))
         finally:
             self.temp.cleanup()
             super().tearDown()
@@ -180,6 +181,10 @@ class LegacyImportBudgetMigrationTests(TransactionTestCase):
         old_snapshot = self.snapshot("SnapshotVersion")
         old_proposals = self.snapshot("ClassificationProposal")
         self.migrate()
+        executor = MigrationExecutor(self.connection)
+        executor.migrate(executor.loader.graph.leaf_nodes("library"))
+        from library.testing_local_ai import bind_device
+        bind_device(self)
         from library.errors import ApiError
         from library.importing import execute_import, import_plan, serialize_import, start_import
         from library.models import ImportBatch, ImportEntry, Job, SnapshotVersion

@@ -9,7 +9,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA = ROOT / "output" / "firefox-extension" / "acceptance-data"
+DATA = Path(os.environ.get("LINKARIUM_EXTENSION_FIXTURE_DATA", ROOT / "output" / "firefox-extension" / "acceptance-data"))
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT)]
 os.environ.update(BOOKMARK_DATA_ROOT=str(DATA), DJANGO_SETTINGS_MODULE="config.settings",
     BOOKMARK_AUTH_DEBUG="0", BOOKMARK_DEBUG="0", BOOKMARK_HTTPS="0", BOOKMARK_TRUST_PROXY="0",
@@ -22,10 +22,8 @@ from django.core.wsgi import get_wsgi_application
 from django.db import close_old_connections
 from django.utils import timezone
 from runtime.file_keys import generate_private_key
-from library.classification import configure_profile, test_profile
 from runtime.models import RuntimeState
 from library.worker import run_one
-from tests.run_ai_acceptance_provider import Handler
 import capture
 
 key_file = DATA / "runtime" / "fixture-key.pem"
@@ -34,11 +32,16 @@ if not key_file.exists():
     generate_private_key(key_file)
 call_command("initialize", private_key=str(key_file), verbosity=0)
 
-provider = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-threading.Thread(target=provider.serve_forever, daemon=True).start()
-profile = configure_profile({"base_url": f"http://127.0.0.1:{provider.server_port}/v1", "model": "fixture",
-    "api_key": "ui-fixture-key"})
-test_profile(profile.id)
+# The cloud fixture cannot connect to the device's model service.
+import socket
+_original_connect = socket.socket.connect
+
+def cloud_connect(connection, address):
+    if isinstance(address, tuple) and address[1] == 18833:
+        raise RuntimeError("Cloud access to the device model API is forbidden")
+    return _original_connect(connection, address)
+
+socket.socket.connect = cloud_connect
 
 
 def fixture_capture(self, request):
@@ -89,6 +92,17 @@ application = get_wsgi_application()
 
 def delayed_submission(environ, start_response):
     phase = None
+    result_phase = None
+    if environ.get("PATH_INFO") == "/api/v1/local-ai/result" and environ.get("REQUEST_METHOD") == "POST":
+        for candidate in ("before", "after"):
+            control = DATA.parent / ("delay-result-" + candidate)
+            if control.exists():
+                control.unlink()
+                result_phase = candidate
+                break
+    if result_phase == "before":
+        (DATA.parent / "result-before-entered").write_text("ready")
+        time.sleep(3)
     if environ.get("PATH_INFO") == "/api/v1/extension/submissions" and environ.get("REQUEST_METHOD") == "POST":
         body = environ["wsgi.input"].read(int(environ.get("CONTENT_LENGTH") or 0))
         environ["wsgi.input"] = io.BytesIO(body)
@@ -98,6 +112,9 @@ def delayed_submission(environ, start_response):
         (DATA.parent / "delay-before-entered").write_text("ready")
         time.sleep(2)
     result = application(environ, start_response)
+    if result_phase == "after":
+        (DATA.parent / "result-after-entered").write_text("ready")
+        time.sleep(3)
     if phase == "after":
         (DATA.parent / "delay-after-entered").write_text("ready")
         time.sleep(2)

@@ -1,3 +1,4 @@
+import { LocalTaskState, LocalTaskActions } from "../components/LocalTask";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, errorMessage, getSession, request } from "../api/client";
 import type { Folder, Session, Settings, Tag, JobGroup, ImportBatch, TaskCatalog } from "../api/types";
@@ -655,12 +656,12 @@ export function App() {
                                   : "—"}
                             </td>
                             <td>
-                              {["retry_wait", "failed"].includes(job.state)
+                              {job.execution_device_id ? <LocalTaskState job={job} /> : ["retry_wait", "failed"].includes(job.state)
                                 ? <span class="status-bad">{errorCodeLabel(job.error_code || "TASK_FAILED")}</span>
                                 : stateLabel(job.state)}
                             </td>
                             <td>
-                              {["retry_wait", "failed", "cancelled"].includes(job.state) ? (
+                              {job.execution_device_id ? <LocalTaskActions job={job} changed={() => {progress.reload(); tasks.reload(); changed();}} /> : ["retry_wait", "failed", "cancelled"].includes(job.state) ? (
                                 <Button
                                   onClick={() => {
                                     void request(`/jobs/${job.id}/retry`, {

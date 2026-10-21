@@ -296,6 +296,9 @@ def idempotent(request, data, execute, runtime=False):
 
 
 def dispatch(request, route):
+    from library.local_ai import current_device
+    from library.ai_transport import AIError
+    token = current_device.set(None)
     try:
         return route_request(request, route)
     except ApiError as error:
@@ -305,6 +308,10 @@ def dispatch(request, route):
         if error.field_errors is not None:
             extra["field_errors"] = error.field_errors
         return error_response(error.code, error.message, error.status, getattr(request, "request_id", None), **extra)
+    except AIError as error:
+        stale = error.code in {"PROPOSAL_STALE", "SUBMISSION_STALE", "ATTEMPT_EXPIRED", "AI_CONFIG_STALE"}
+        return error_response(error.code, "分类材料已变化，请重新发起任务" if stale else "模型结果或配置无效，请检查本机执行端",
+            409 if stale else 400, getattr(request, "request_id", None))
     except (ValueError, TypeError, ValidationError):
         return error_response("INVALID_INPUT", "请求字段格式无效", 400, getattr(request, "request_id", None))
     except RequestDataTooBig:
@@ -317,6 +324,8 @@ def dispatch(request, route):
             return error_response(code, "外部服务请求失败，请检查配置或稍后重试", 503 if "TIMEOUT" in code else 400, getattr(request, "request_id", None))
         logger.exception("API failure request=%s", getattr(request, "request_id", ""))
         return error_response("INTERNAL_ERROR", "服务暂时无法处理请求", 500, getattr(request, "request_id", None))
+    finally:
+        current_device.reset(token)
 
 
 def route_request(request, route):
@@ -372,10 +381,24 @@ def route_request(request, route):
         return ok(file_key_request(request, route.removeprefix("session/key/"), payload(request)))
     if not request.user.is_authenticated or request.user.username != settings.BOOKMARK_OWNER:
         raise ApiError("AUTH_REQUIRED", "请先登录", 401)
+    from library import local_ai
+    if route == "local-ai/devices":
+        require_method(request, "POST")
+        return ok(local_ai.register(request.user, payload(request)), 201)
+    device = local_ai.authenticate_device(request, required=route.startswith("local-ai/"))
+    local_ai.current_device.set(device)
+    if route == "local-ai/device":
+        require_method(request, "GET")
+        return ok(local_ai.serialize_device(device))
     state = queue.runtime_state()
     maintenance_allowed = parts[0] in ("session", "runtime", "backups", "restores", "maintenance-operations", "data")
     if state.maintenance_mode and not maintenance_allowed:
         raise ApiError("MAINTENANCE", "收藏库正在维护，请稍后重试", 503)
+    if route in {"local-ai/claim", "local-ai/heartbeat", "local-ai/pause", "local-ai/result"}:
+        require_method(request, "POST")
+        handler = {"claim": local_ai.claim, "heartbeat": local_ai.heartbeat,
+            "pause": local_ai.pause, "result": local_ai.submit_result}[parts[1]]
+        return ok(handler(payload(request)))
     if state.maintenance_mode and parts[0] in {"backups", "restores"} and request.method != "GET":
         if MaintenanceOperation.objects.filter(pk=state.active_maintenance_id, kind__in=["clear", "reset"]).exists():
             raise ApiError("MAINTENANCE_BUSY", "正在清理数据，请等待操作完成", 409)
@@ -627,6 +650,8 @@ def route_request(request, route):
             transaction.on_commit(lambda: queue.enqueue("cleanup", priority=0, active_key="cleanup"), using="library")
         return ok({"deleted_count": len(versions)})
     if parts[0] == "ai-profiles":
+        if request.method != "GET":
+            raise ApiError("LOCAL_AI_ONLY", "AI 配置已迁移至 Firefox 插件；服务器不再接收模型密钥或调用模型", 409)
         from library.classification import configure_profile
         if len(parts) == 1:
             require_method(request, "GET", "POST")
@@ -651,7 +676,7 @@ def route_request(request, route):
             ids = data.get("bookmark_ids", data.get("ids", []))
             if data.get("folder_id"):
                 ids = folder_bookmark_ids(data["folder_id"])
-            return ok(queue.group_status(queue.request_classification(ids, data.get("profile_id"))), 202)
+            return idempotent(request, data, lambda: ok(queue.group_status(queue.request_classification(ids, data.get("profile_id"))), 202))
         if route == "classification/proposals":
             require_method(request, "GET")
             statuses = request.GET.get("status", "pending,stale").split(",")

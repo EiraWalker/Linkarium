@@ -1,4 +1,5 @@
 import type { Envelope, Session } from "./types";
+import { needsExecutor, executorStatus, executeBound } from "./localExecutor";
 
 let csrfToken = "";
 export class ApiError extends Error {
@@ -29,6 +30,14 @@ export async function request<T>(
   } = {},
 ): Promise<Envelope<T>> {
   const method = options.method ?? "GET";
+  if (needsExecutor(path, method)) {
+    let available = false;
+    try {available = (await executorStatus()).protocol === 1;} catch { /* Saving alone remains available. */ }
+    if (available) return executeBound<T>(path, options.body, options.key);
+    if (path === "/classification/batches" || /^\/imports\/.+\/execute$/.test(path)) {
+      throw new ApiError(409, "LOCAL_DEVICE_REQUIRED", "请安装或升级 Firefox 本机 AI 插件，并允许访问此站点后发起分类。");
+    }
+  }
   const headers: Record<string, string> = { Accept: "application/json" };
   if (method !== "GET" && method !== "HEAD") headers["X-CSRFToken"] = csrfToken;
   if (options.key) headers["Idempotency-Key"] = options.key;

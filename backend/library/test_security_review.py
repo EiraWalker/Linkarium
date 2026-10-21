@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
 from runtime.models import ProviderSecret, RuntimeState
+from .testing_local_ai import bind_device
 from runtime.testing import force_credential_login
 from .ai_transport import AIError
 from .classification import configure_profile, test_profile as check_profile, verified_client
@@ -23,6 +24,7 @@ class SecurityReviewTests(TestCase):
         LibrarySettings.objects.create(pk=1)
         user = get_user_model().objects.create_user("owner")
         force_credential_login(self.client, user)
+        bind_device(self)
 
     def legacy_profile(self):
         profile = AIProfile.objects.create(name="Legacy provider", base_url="http://remote.example/v1", model="legacy-model")
@@ -49,7 +51,7 @@ class SecurityReviewTests(TestCase):
             for action in (lambda: verified_client(profile.id), lambda: check_profile(profile.id)):
                 with self.assertRaises(AIError) as error:
                     action()
-                self.assertEqual(error.exception.code, "AI_HTTPS_REQUIRED")
+                self.assertEqual(error.exception.code, "LOCAL_AI_ONLY")
             network.assert_not_called()
 
     def test_old_remote_http_profile_can_be_reconfigured_without_losing_the_profile(self):

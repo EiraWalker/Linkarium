@@ -51,13 +51,8 @@ def validate_plan(result, site_count):
     return output
 
 
-def shared_taxonomy(profile, execution_guard=None):
-    from django.db import transaction
-    from .classification import _check_execution, verified_client
-    from .models import Bookmark, ClassificationTaxonomy, Folder
-    saved = ClassificationTaxonomy.objects.filter(pk=1).first()
-    if saved:
-        return saved.categories
+def prepare_request():
+    from .models import Bookmark, Folder
     sites = list(Bookmark.objects.order_by("id"))
     row_budget = max(20, 30000 // max(1, len(sites)))
     rows = [[site.title[:max(8, row_budget * 2 // 3)], site.domain[:max(8, row_budget // 3)]] for site in sites]
@@ -84,24 +79,11 @@ def shared_taxonomy(profile, execution_guard=None):
         {"role": "user", "content": json.dumps({"task": "plan_taxonomy", "library_websites": rows,
             "existing_name_examples": names, "max_roots": min(MAX_ROOTS, max(1, len(sites) // 6)),
             "max_categories": min(MAX_CATEGORIES, max(1, len(sites) // 4))}, ensure_ascii=False)}]
-    _check_execution(execution_guard)
-    current, client = verified_client(profile.id)
-    if current.revision != profile.revision:
-        raise AIError("AI_CONFIG_STALE")
-    client.total_timeout = 240
-    result = client.complete(messages, schema=SCHEMA)
-    _check_execution(execution_guard)
-    current, _ = verified_client(profile.id)
-    if current.revision != profile.revision:
-        raise AIError("AI_CONFIG_STALE")
-    categories = validate_plan(result, len(sites))
-    with transaction.atomic(using="library"):
-        _check_execution(execution_guard)
-        current, _ = verified_client(profile.id)
-        if current.revision != profile.revision:
-            raise AIError("AI_CONFIG_STALE")
-        saved, _ = ClassificationTaxonomy.objects.get_or_create(pk=1, defaults={"categories": categories})
-    return saved.categories
+    return messages, {"site_count": len(sites)}
+
+
+def shared_taxonomy(*args, **kwargs):
+    raise AIError("LOCAL_DEVICE_REQUIRED", "Taxonomy planning runs on the initiating device")
 
 
 def category_targets(categories, folders):

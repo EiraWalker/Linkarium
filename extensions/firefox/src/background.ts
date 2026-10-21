@@ -14,25 +14,6 @@
     return operation;
   }
 
-  async function bridgeTab(): Promise<browser.tabs.Tab> {
-    const tabs = await browser.tabs.query({url: Linkarium.SITE_PATTERN, windowType: "normal"});
-    const existing = tabs.find(tab => tab.url && new URL(tab.url).origin === Linkarium.ORIGIN &&
-      !tab.incognito && (!tab.cookieStoreId || tab.cookieStoreId === "firefox-default"));
-    return existing || browser.tabs.create({url: Linkarium.ORIGIN + "/", active: false});
-  }
-
-  async function send(tab: browser.tabs.Tab, request: Linkarium.BridgeRequest): Promise<Linkarium.Reply> {
-    // A newly created site tab needs to finish loading its fixed content script.
-    for (let attempt = 0; attempt < 30; attempt++) {
-      try {
-        const reply = await browser.tabs.sendMessage(tab.id!, request, {frameId: 0});
-        if (reply && typeof reply.ok === "boolean") return reply;
-      }
-      catch { await new Promise(resolve => setTimeout(resolve, 250)); }
-    }
-    return {ok: false, code: "BRIDGE_UNAVAILABLE", message: "无法连接 Linkarium，请检查站点权限或稍后重试"};
-  }
-
   async function perform(operation: Linkarium.Operation, action: "submit" | "status" | "retry") {
     if (busy.has(operation.id)) return busy.get(operation.id)!;
     const work = (async () => {
@@ -42,30 +23,29 @@
           operation.message = "请允许插件访问 Linkarium 后再重试";
           return remember(operation);
         }
-        let tab = await bridgeTab();
-        const request: Linkarium.BridgeRequest = {kind: "linkarium-api", action,
-          key: action === "retry" ? operation.retry!.key : operation.id,
-          url: operation.url, title: operation.title,
-          submissionId: operation.result?.submission_id, revision: operation.retry?.revision};
-        let reply = await send(tab, request);
-        if (!reply.ok && reply.code === "BRIDGE_UNAVAILABLE") {
-          // Repair only the fixed Linkarium bridge, never the source page.
-          await browser.scripting.executeScript({target: {tabId: tab.id!, frameIds: [0]}, files: ["common.js", "bridge.js"]});
-          reply = await send(tab, request);
+        let path = "/extension/submissions";
+        let body: unknown = {url: operation.url, title: operation.title};
+        if (action !== "submit") {
+          path += "/" + operation.result!.submission_id;
+          body = undefined;
+          if (action === "retry") {path += "/retry"; body = {revision: operation.retry!.revision};}
         }
+        const key = action === "retry" ? operation.retry!.key : operation.id;
+        let reply = await LocalCloud.request(path, body, key);
         if (!reply.ok && reply.code === "NETWORK_ERROR" && !operation.recoveryTried) {
           operation.recoveryTried = true;
           await remember(operation);
-          reply = await send(tab, request);
+          reply = await LocalCloud.request(path, body, key);
         }
         if (reply.ok) {
           operation.state = "accepted";
           operation.result = reply.data;
+          void LocalExecutor.wake(true);
           operation.message = undefined;
           operation.retry = undefined;
         } else if (reply.code === "AUTH_REQUIRED") {
           operation.state = "login_required";
-          await browser.tabs.update(tab.id!, {active: true});
+          await browser.tabs.create({url: Linkarium.ORIGIN + "/", active: true});
         } else {
           operation.state = operation.result ? "accepted" : "unconfirmed";
           operation.message = reply.message;
@@ -138,6 +118,7 @@
   browser.runtime.onMessage.addListener((message, sender) => {
     if (sender.id !== browser.runtime.id) return;
     if (message?.kind === "linkarium-authenticated" && sender.tab?.url?.startsWith(Linkarium.ORIGIN + "/")) {
+      void LocalExecutor.wake(true);
       return browser.storage.local.get(null).then(async stored => {
         for (const key of Object.keys(stored).filter(key => key.startsWith(Linkarium.PREFIX))) {
           const operation = stored[key] as Linkarium.Operation;

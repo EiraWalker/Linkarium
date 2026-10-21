@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { errorMessage, request } from "../../api/client";
-import type { CaptureNetworkSettings, Job, Profile, RuntimeStatus } from "../../api/types";
+import type { CaptureNetworkSettings, Profile, RuntimeStatus } from "../../api/types";
 import { useApp } from "../../app/context";
 import { useResource } from "../../app/hooks";
 import {
@@ -8,14 +8,12 @@ import {
   ErrorNotice,
   Field,
   Icon,
-  stateLabel,
-  terminalState,
   Time,
-  errorCodeLabel,
 } from "../../components/UI";
 import s from "./Settings.module.css";
 import { DataActions } from "./DataActions";
 import { PasskeySettings } from "./Passkeys";
+import { LocalAISettings } from "./LocalAI";
 
 export function SettingsPage() {
   const app = useApp();
@@ -27,16 +25,10 @@ export function SettingsPage() {
   const [days, setDays] = useState("7");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [selected, setSelected] = useState<string>("");
-  const [creating, setCreating] = useState(false);
   useEffect(() => {
     if (app.settings)
       setDays(String(app.settings.default_refresh_seconds / 86400));
   }, [app.settings?.revision]);
-  useEffect(() => {
-    if (profiles.data?.length && !selected && !creating)
-      setSelected(profiles.data[0].id);
-  }, [profiles.data]);
   async function saveDefault(e: Event) {
     e.preventDefault();
     if (!app.settings) return;
@@ -58,7 +50,6 @@ export function SettingsPage() {
       setBusy(false);
     }
   }
-  const profile = profiles.data?.find((p) => p.id === selected);
   return (
     <main class={s.page}>
       <h1>设置</h1>
@@ -91,52 +82,9 @@ export function SettingsPage() {
       </section>
         <CaptureNetworkForm />
       <section class={s.section}>
-        <div class={s.heading}>
-          <h2>
-            <Icon name="folder" />
-            AI 自动分类
-          </h2>
-          <Button
-            icon="plus"
-            onClick={() => {
-              setCreating(true);
-              setSelected("");
-            }}
-          >
-            新建配置
-          </Button>
-        </div>
-        <p class="muted">
-          软件会发送网址、标题、简介与有限正文片段。分类建议需人工确认，才会建立目录和移动网站。
-        </p>
-        <ErrorNotice message={profiles.error} retry={profiles.reload} />
-        {!!profiles.data?.length && (
-          <Field label="选择配置">
-            <select
-              value={selected}
-              onChange={(e) => {
-                setSelected(e.currentTarget.value);
-                setCreating(false);
-              }}
-            >
-              <option value="">新建配置</option>
-              {profiles.data.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-        )}
-        <ProfileForm
-          key={profile?.id ?? "new"}
-          profile={profile}
-          onSaved={(id) => {
-            setSelected(id);
-            setCreating(false);
-            app.changed();
-          }}
-        />
+          <h2><Icon name="folder" />本机 AI 分类</h2>
+          <LocalAISettings />
+          {!!profiles.data?.length && <p class="muted">保留 {profiles.data.length} 份历史服务器配置供兼容使用；分类不再读取其凭据。</p>}
       </section>
       <section class={s.section}>
         <h2>
@@ -284,217 +232,4 @@ function runtimeRows(status: Record<string, unknown>) {
       ? [["收藏库大小", bytes(status.library_bytes)]]
       : []),
   ] as const;
-}
-function ProfileForm({
-  profile,
-  onSaved,
-}: {
-  profile?: Profile;
-  onSaved: (id: string) => void;
-}) {
-  const app = useApp();
-  const [name, setName] = useState(profile?.name ?? "默认 AI");
-  const [base, setBase] = useState(
-    profile?.base_url ?? profile?.endpoint ?? "",
-  );
-  const [model, setModel] = useState(profile?.model ?? "");
-  const [key, setKey] = useState("");
-  const [enabled, setEnabled] = useState(profile?.enabled ?? true);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [testId, setTestId] = useState<string | null>(null);
-  const [testMessage, setTestMessage] = useState("");
-  const test = useResource<Job>(
-    testId ? `/jobs/${testId}` : null,
-    0,
-    testId ? 2000 : 0,
-  );
-  useEffect(() => {
-    if (test.data && terminalState(test.data.state)) {
-      setTestMessage(
-        test.data.state === "succeeded"
-          ? "连接验证成功，配置已可用于分类。"
-          : `验证失败：${test.data.error_code ? errorCodeLabel(test.data.error_code) : (test.data.error_message ?? stateLabel(test.data.state))}`,
-      );
-      setTestId(null);
-      app.changed();
-    }
-  }, [test.data?.state]);
-  async function save(e: Event) {
-    e.preventDefault();
-    setError("");
-    setBusy(true);
-    try {
-      const { data } = await request<Profile>(
-        profile ? `/ai-profiles/${profile.id}` : "/ai-profiles",
-        {
-          method: profile ? "PATCH" : "POST",
-          body: {
-            name,
-            base_url: base,
-            model,
-            protocol: "chat-completions",
-            enabled,
-            ...(profile ? { revision: profile.revision } : {}),
-            ...(key ? { api_key: key } : {}),
-          },
-        },
-      );
-      setKey("");
-      onSaved(data.id);
-      app.notify("AI 配置已保存，请测试连接后使用。");
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function testConnection() {
-    if (!profile) return;
-    setBusy(true);
-    setError("");
-    setTestMessage("");
-    try {
-      const { data } = await request<{
-        job_id?: string;
-        group_id?: string;
-        message?: string;
-        success?: boolean;
-        state?: string;
-      }>(`/ai-profiles/${profile.id}/test`, { method: "POST", body: {} });
-      if (data.job_id) setTestId(data.job_id);
-      else {
-        setTestMessage(
-          data.message ??
-            (data.success || data.state === "succeeded"
-              ? "连接验证成功。"
-              : "验证请求已提交。"),
-        );
-        app.changed();
-      }
-      if (data.group_id) app.trackGroup(data.group_id);
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <form onSubmit={save}>
-      <ErrorNotice message={error || test.error} />
-      {profile?.endpoint_error_code && <p role="status">{profile.endpoint_error_code === "AI_HTTPS_REQUIRED"
-        ? "远程 AI 服务必须使用 HTTPS，请修改 API 地址、重新提供密钥并验证连接。"
-        : "API 地址或协议需要更新，请修改配置并重新验证连接。"}</p>}
-      <div class={s.formGrid}>
-        <Field label="配置名称">
-          <input
-            required
-            value={name}
-            maxLength={100}
-            onInput={(e) => setName(e.currentTarget.value)}
-          />
-        </Field>
-        <Field label="模型名称">
-          <input
-            required
-            value={model}
-            placeholder="填写服务商提供的模型名称"
-            onInput={(e) => setModel(e.currentTarget.value)}
-          />
-        </Field>
-      </div>
-      <Field
-        label="API 地址"
-        hint="支持 OpenAI Chat Completions 兼容协议，地址包含服务商要求的 /v1 等路径。"
-      >
-        <input
-          type="url"
-          required
-          value={base}
-          placeholder="https://api.example.com/v1"
-          onInput={(e) => setBase(e.currentTarget.value)}
-        />
-      </Field>
-      <Field
-        label="API 密钥"
-        hint={
-          profile?.key_configured
-            ? "密钥已配置；留空保留。密钥不会进入收藏库备份。"
-            : "密钥只由服务端保存，不会在浏览器持久保存。"
-        }
-      >
-        <input
-          type="password"
-          autoComplete="off"
-          value={key}
-          onInput={(e) => setKey(e.currentTarget.value)}
-          placeholder={profile?.key_configured ? "已配置密钥" : "输入 API 密钥"}
-        />
-      </Field>
-      <label class="inline">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => setEnabled(e.currentTarget.checked)}
-        />
-        启用该配置
-      </label>
-      {profile && (
-        <p
-          class={
-            profile.key_verified && profile.binding_matches
-              ? "status-good"
-              : "muted"
-          }
-        >
-          {profile.key_verified && profile.binding_matches
-            ? "已验证 · 可调用"
-            : "尚未验证 · 保存后请测试连接"}
-        </p>
-      )}
-      {testMessage && <p role="status">{testMessage}</p>}
-      {testId && (
-        <p class="muted" role="status">
-          正在验证服务连接与分类输出…
-        </p>
-      )}
-      <div class="inline">
-        <Button primary type="submit" disabled={busy}>
-          保存配置
-        </Button>
-        <Button
-          onClick={() => void testConnection()}
-          disabled={busy || !profile || !!testId}
-        >
-          测试连接
-        </Button>
-      </div>
-      {profile && (
-        <div class={s.activeProfile}>
-          <Button
-            onClick={() => {
-              if (!app.settings) return;
-              void request("/settings", {
-                method: "PATCH",
-                body: {
-                  revision: app.settings.revision,
-                  active_ai_profile_id: profile.id,
-                },
-              })
-                .then(() => {
-                  app.changed();
-                  app.notify("已设为自动分类使用的配置。");
-                })
-                .catch((e) => setError(errorMessage(e)));
-            }}
-            disabled={app.settings?.active_ai_profile_id === profile.id}
-          >
-            {app.settings?.active_ai_profile_id === profile.id
-              ? "当前自动分类配置"
-              : "设为自动分类配置"}
-          </Button>
-        </div>
-      )}
-    </form>
-  );
 }

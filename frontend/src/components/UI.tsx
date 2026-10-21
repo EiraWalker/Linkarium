@@ -299,6 +299,12 @@ export function errorCodeLabel(code: string) {
         CAPTURE_UNSUPPORTED: "该页面暂不支持完整归档",
         CAPTURE_REPLAY_FAILED: "网页归档校验失败",
         AI_TIMEOUT: "AI 服务响应超时",
+        LOCAL_DEVICE_REQUIRED: "请绑定 Firefox 本机执行端",
+        LOCAL_EXECUTOR_REQUIRED: "旧任务需要在本设备重新发起",
+        LOCAL_INTERRUPTED: "等待发起设备恢复",
+        LOCAL_API_UNAVAILABLE: "本机 API 暂不可用",
+        LOCAL_API_INVALID: "本机模型结果无效，请检查配置",
+        DEVICE_FORBIDDEN: "任务只能由发起设备执行",
         AI_RATE_LIMITED: "AI 服务调用频率受限",
         AI_UNCONFIGURED: "请先配置并验证 AI 服务",
         AI_INVALID_RESULT: "AI 服务返回的分类结果无效",
@@ -313,6 +319,15 @@ export function errorCodeLabel(code: string) {
 }
 export const stateLabel = (state?: string) =>
   ({
+    waiting_materials: "等待云端采集材料",
+    storage_blocked: "本机缓存不可写，已暂停",
+    waiting_device: "等待发起设备",
+    waiting_taxonomy: "等待共享分类体系",
+    paused: "本机任务已暂停",
+    waiting_upload: "本机结果待回传",
+    review_ready: "已生成待校对方案",
+    auto_applied: "已自动归档",
+    invalidated: "结果已失效",
     queued: "等待执行",
     running: "正在执行",
     retry_wait: "等待重试",

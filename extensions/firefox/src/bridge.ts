@@ -1,67 +1,57 @@
 (() => {
+  if (window.top !== window || new URL(document.URL).origin !== Linkarium.ORIGIN) return;
   type Listener = Parameters<typeof browser.runtime.onMessage.addListener>[0];
-  const scope = globalThis as typeof globalThis & {linkariumBridge?: {listener: Listener; timer: ReturnType<typeof setInterval>}};
+  const scope = globalThis as typeof globalThis & {linkariumBridge?: {listener: Listener; page: (event: MessageEvent) => void; timer: ReturnType<typeof setInterval>}};
   if (scope.linkariumBridge) {
     browser.runtime.onMessage.removeListener(scope.linkariumBridge.listener);
+    window.removeEventListener("message", scope.linkariumBridge.page);
     clearInterval(scope.linkariumBridge.timer);
   }
-  async function request(message: Linkarium.BridgeRequest, refresh = true): Promise<Linkarium.Reply> {
-    if (new URL(document.URL).origin !== Linkarium.ORIGIN) {
-      return {ok: false, code: "INVALID_ORIGIN", message: "Linkarium 页面来源不匹配"};
-    }
+  const uuid = "[0-9a-f-]{36}";
+  function allowed(path: unknown, method: unknown): path is string {
+    if (typeof path !== "string") return false;
+    return method === "POST" && ["/local-ai/devices", "/local-ai/claim", "/local-ai/heartbeat", "/local-ai/pause", "/local-ai/result", "/extension/submissions", "/bookmarks", "/classification/batches"].includes(path) ||
+      method === "POST" && new RegExp("^/(?:extension/submissions/" + uuid + "/retry|jobs/" + uuid + "/retry|imports/" + uuid + "/execute)$").test(path) ||
+      method === "GET" && (path === "/local-ai/device" || new RegExp("^/extension/submissions/" + uuid + "$").test(path));
+  }
+  async function request(message: any): Promise<LocalCloud.Reply> {
     const sessionResponse = await fetch("/api/v1/session", {credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(15000)});
     const session = await sessionResponse.json();
     if (!sessionResponse.ok) return {ok: false, code: "UNAVAILABLE", message: "Linkarium 暂时不可用"};
-    if (!session.data?.authenticated) {
-      wasAuthenticated = false;
-      return {ok: false, code: "AUTH_REQUIRED", message: "请先登录 Linkarium"};
-    }
+    if (!session.data?.authenticated) return {ok: false, code: "AUTH_REQUIRED", message: "请先登录 Linkarium 后恢复本机分类"};
     const headers: Record<string, string> = {"Content-Type": "application/json", "Idempotency-Key": message.key, "X-CSRFToken": session.data.csrf_token};
-    let path = "/api/v1/extension/submissions";
-    let body: string | undefined;
-    if (message.action === "submit") {
-      body = JSON.stringify({url: Linkarium.pageUrl(message.url || ""), title: message.title || ""});
-    } else {
-      if (!/^[0-9a-f-]{36}$/.test(message.submissionId || "")) throw new Error("Invalid submission");
-      path += "/" + message.submissionId;
-      if (message.action === "retry") {
-        path += "/retry";
-        body = JSON.stringify({revision: message.revision});
-      }
+    if (message.device) {
+      headers["X-Linkarium-Device"] = message.device.id;
+      headers["X-Linkarium-Device-Proof"] = message.device.proof;
     }
-    const response = await fetch(path, {method: body ? "POST" : "GET", headers,
-      body, credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(15000)});
-    if (response.status === 403 && refresh) return request(message, false);
+    const response = await fetch("/api/v1" + message.path, {method: message.method, headers,
+      body: message.body === undefined ? undefined : JSON.stringify(message.body), credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(20000)});
     const value = await response.json();
-    if (response.ok && typeof value.data?.submission_id === "string") return {ok: true, data: value.data};
+    if (response.ok && "data" in value) return {ok: true, data: value.data};
     return {ok: false, code: value.error?.code || "INVALID_RESPONSE", message: value.error?.message || "Linkarium 响应无效"};
   }
-
-  const listener: Listener = (message: Linkarium.BridgeRequest, sender) => {
-    if (sender.id !== browser.runtime.id || message?.kind !== "linkarium-api" ||
-        !["submit", "status", "retry"].includes(message.action) || typeof message.key !== "string") return;
-    return request(message).catch((): Linkarium.Reply => ({ok: false, code: "NETWORK_ERROR", message: "连接中断，提交结果待确认"}));
+  const listener: Listener = (message, sender) => {
+    if (sender.id !== browser.runtime.id || message?.kind !== "linkarium-cloud" || !allowed(message.path, message.method) || typeof message.key !== "string") return;
+    return request(message).catch((): LocalCloud.Reply => ({ok: false, code: "NETWORK_ERROR", message: "云端连接中断，保留本机进度"}));
   };
   browser.runtime.onMessage.addListener(listener);
-
-  // A login may complete in the existing SPA or after a full navigation.
-  let wasAuthenticated = false;
-  async function announce(initial = false) {
-    try {
-      if (new URL(document.URL).origin !== Linkarium.ORIGIN) return;
-      if (!initial) {
-        const stored = await browser.storage.local.get(null);
-        if (!Object.keys(stored).some(key => key.startsWith(Linkarium.PREFIX) && stored[key].state === "login_required")) return;
-      }
-      const response = await fetch("/api/v1/session", {credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(10000)});
-      const session = await response.json();
-      if (session.data?.authenticated && !wasAuthenticated) {
-        await browser.runtime.sendMessage({kind: "linkarium-authenticated"});
-      }
-      wasAuthenticated = Boolean(session.data?.authenticated);
-    } catch { /* A later login poll can recover without submitting anything. */ }
-  }
-  void announce(true);
-  const timer = setInterval(() => { void announce(); }, 3000);
-  scope.linkariumBridge = {listener, timer};
+  const page = (event: MessageEvent) => {
+    if (event.source !== window || event.origin !== Linkarium.ORIGIN || event.data?.channel !== "linkarium-page-v1" || typeof event.data.id !== "string") return;
+    const message = event.data;
+    if (!["linkarium-web", "linkarium-device-status", "linkarium-open-local-settings"].includes(message.kind)) return;
+    void browser.runtime.sendMessage(message).then(result => window.postMessage({channel: "linkarium-reply-v1", id: message.id, result}, Linkarium.ORIGIN))
+      .catch(() => window.postMessage({channel: "linkarium-reply-v1", id: message.id, result: {ok: false, code: "EXTENSION_UNAVAILABLE", message: "请重新加载插件"}}, Linkarium.ORIGIN));
+  };
+  window.addEventListener("message", page);
+  let authenticated = false;
+  const timer = setInterval(() => {
+    if (authenticated) return;
+    void fetch("/api/v1/session", {credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(10000)})
+      .then(response => response.json()).then(session => {
+        authenticated = Boolean(session.data?.authenticated);
+        if (authenticated) return browser.runtime.sendMessage({kind: "linkarium-authenticated"});
+      }).catch(() => {});
+  }, 3000);
+  scope.linkariumBridge = {listener, page, timer};
+  void browser.runtime.sendMessage({kind: "linkarium-authenticated"}).catch(() => {});
 })();

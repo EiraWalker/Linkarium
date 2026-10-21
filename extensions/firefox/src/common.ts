@@ -14,6 +14,8 @@ namespace Linkarium {
     error_message: string;
     can_retry: boolean;
     group_id: string | null;
+    execution_state?: string;
+    execution_device_id?: string | null;
   }
   export interface Operation {
     id: string;
@@ -27,16 +29,6 @@ namespace Linkarium {
     restartRecoveryTried?: boolean;
     retry?: {key: string; revision: number};
   }
-  export interface BridgeRequest {
-    kind: "linkarium-api";
-    action: "submit" | "status" | "retry";
-    key: string;
-    url?: string;
-    title?: string;
-    submissionId?: string;
-    revision?: number;
-  }
-  export type Reply = {ok: true; data: Submission} | {ok: false; code: string; message: string};
   export function pageUrl(value: string): string {
     const url = new URL(value);
     if (!/^https?:$/.test(url.protocol) || url.username || url.password || value.length > 8192 || /[\x00-\x1f]/.test(value)) {
@@ -51,6 +43,11 @@ namespace Linkarium {
     if (operation.result.state === "classified") return "已自动归档";
     if (operation.result.state === "already_saved") return "已存在";
     if (operation.result.state === "needs_attention") return "已保存，分类需要处理";
+    const phase = operation.result.execution_state;
+    if (phase === "paused" || phase === "storage_blocked") return "已保存，本机分类已暂停";
+    if (phase === "waiting_device" || phase === "waiting_taxonomy") return "已保存，等待发起设备分类";
+    if (phase === "waiting_materials") return "已保存，等待采集分类材料";
+    if (phase === "waiting_upload") return "已保存，本机结果待回传";
     return "已保存，正在分类";
   }
 }

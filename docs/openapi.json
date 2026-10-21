@@ -6698,145 +6698,6 @@
           }
         },
         "parameters": []
-      },
-      "post": {
-        "operationId": "post_ai-profiles",
-        "tags": [
-          "ai-profiles"
-        ],
-        "security": [
-          {
-            "ownerSession": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success; see docs/api-contract.md for entity fields",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope"
-                }
-              }
-            }
-          },
-          "202": {
-            "description": "Accepted; business job/group ID or runtime operation ID"
-          },
-          "201": {
-            "description": "Created"
-          },
-          "400": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AIProfileWrite"
-              }
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "X-CSRFToken",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Masked csrf_token returned by GET /session; rotate after login"
-          },
-          {
-            "name": "Idempotency-Key",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "maxLength": 128
-            }
-          }
-        ]
       }
     },
     "/ai-profiles/{id}": {
@@ -6953,11 +6814,13 @@
             }
           }
         ]
-      },
-      "patch": {
-        "operationId": "patch_ai-profiles_id",
+      }
+    },
+    "/local-ai/devices": {
+      "post": {
+        "operationId": "post_local-ai_devices",
         "tags": [
-          "ai-profiles"
+          "local-ai"
         ],
         "security": [
           {
@@ -7062,25 +6925,302 @@
             }
           }
         },
+        "description": "Device-owned execution protocol 1; see docs/api-contract.md section 7. No provider secrets accepted. Model response and checkpoint are committed atomically.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AIProfileWrite"
+                "type": "object"
               }
             }
           }
         },
         "parameters": [
           {
-            "name": "id",
-            "in": "path",
+            "name": "X-CSRFToken",
+            "in": "header",
             "required": true,
             "schema": {
+              "type": "string"
+            },
+            "description": "Masked csrf_token returned by GET /session; rotate after login"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
               "type": "string",
-              "format": "uuid"
+              "maxLength": 128
             }
+          }
+        ]
+      }
+    },
+    "/local-ai/device": {
+      "get": {
+        "operationId": "get_local-ai_device",
+        "tags": [
+          "local-ai"
+        ],
+        "security": [
+          {
+            "ownerSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; see docs/api-contract.md for entity fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Linkarium-Device",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
+          },
+          {
+            "name": "X-Linkarium-Device-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
+          }
+        ]
+      }
+    },
+    "/local-ai/claim": {
+      "post": {
+        "operationId": "post_local-ai_claim",
+        "tags": [
+          "local-ai"
+        ],
+        "security": [
+          {
+            "ownerSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; see docs/api-contract.md for entity fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted; business job/group ID or runtime operation ID"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "Device-owned execution protocol 1; see docs/api-contract.md section 7. No provider secrets accepted. Model response and checkpoint are committed atomically.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Linkarium-Device",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
+          },
+          {
+            "name": "X-Linkarium-Device-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
           },
           {
             "name": "X-CSRFToken",
@@ -7103,11 +7243,11 @@
         ]
       }
     },
-    "/ai-profiles/{id}/test": {
+    "/local-ai/heartbeat": {
       "post": {
-        "operationId": "post_ai-profiles_id_test",
+        "operationId": "post_local-ai_heartbeat",
         "tags": [
-          "ai-profiles"
+          "local-ai"
         ],
         "security": [
           {
@@ -7212,6 +7352,7 @@
             }
           }
         },
+        "description": "Device-owned execution protocol 1; see docs/api-contract.md section 7. No provider secrets accepted. Model response and checkpoint are committed atomically.",
         "requestBody": {
           "required": true,
           "content": {
@@ -7224,13 +7365,342 @@
         },
         "parameters": [
           {
-            "name": "id",
-            "in": "path",
+            "name": "X-Linkarium-Device",
+            "in": "header",
             "required": true,
             "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
+          },
+          {
+            "name": "X-Linkarium-Device-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
+          },
+          {
+            "name": "X-CSRFToken",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Masked csrf_token returned by GET /session; rotate after login"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
               "type": "string",
-              "format": "uuid"
+              "maxLength": 128
             }
+          }
+        ]
+      }
+    },
+    "/local-ai/pause": {
+      "post": {
+        "operationId": "post_local-ai_pause",
+        "tags": [
+          "local-ai"
+        ],
+        "security": [
+          {
+            "ownerSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; see docs/api-contract.md for entity fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted; business job/group ID or runtime operation ID"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "Device-owned execution protocol 1; see docs/api-contract.md section 7. No provider secrets accepted. Model response and checkpoint are committed atomically.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Linkarium-Device",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
+          },
+          {
+            "name": "X-Linkarium-Device-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
+          },
+          {
+            "name": "X-CSRFToken",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Masked csrf_token returned by GET /session; rotate after login"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
+          }
+        ]
+      }
+    },
+    "/local-ai/result": {
+      "post": {
+        "operationId": "post_local-ai_result",
+        "tags": [
+          "local-ai"
+        ],
+        "security": [
+          {
+            "ownerSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; see docs/api-contract.md for entity fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted; business job/group ID or runtime operation ID"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "Device-owned execution protocol 1; see docs/api-contract.md section 7. No provider secrets accepted. Model response and checkpoint are committed atomically.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Linkarium-Device",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
+          },
+          {
+            "name": "X-Linkarium-Device-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
           },
           {
             "name": "X-CSRFToken",
@@ -7373,6 +7843,24 @@
           }
         },
         "parameters": [
+          {
+            "name": "X-Linkarium-Device",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
+          },
+          {
+            "name": "X-Linkarium-Device-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
+          },
           {
             "name": "X-CSRFToken",
             "in": "header",
@@ -8649,6 +9137,24 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "X-Linkarium-Device",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
+          },
+          {
+            "name": "X-Linkarium-Device-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"
           },
           {
             "name": "X-CSRFToken",

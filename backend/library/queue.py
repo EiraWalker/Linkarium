@@ -27,7 +27,9 @@ def enqueue(kind, target_id=None, variant="", priority=40, payload=None, group=N
         if priority >= 60:
             existing.available_at = timezone.now()
         existing.save(update_fields=["priority", "available_at", "updated_at"])
-    job = existing or Job.objects.create(kind=kind, target_id=target_id, variant=variant, priority=priority, payload=payload or {}, input_revision=input_revision, active_key=active_key, available_at=timezone.now(), generation=state.active_generation, library_epoch=state.library_epoch)
+    job = existing or Job.objects.create(kind=kind, target_id=target_id, variant=variant, priority=priority, payload=payload or {}, input_revision=input_revision, active_key=active_key, available_at=timezone.now(), generation=state.active_generation, library_epoch=state.library_epoch,
+        execution_device_id=(payload or {}).get("device_id") if kind == "classification" else None,
+        execution_state="waiting_device" if kind == "classification" else "")
     if group:
         JobGroupMember.objects.get_or_create(group=group, job=job, defaults={"bookmark_id": target_id if kind in ("capture", "metadata") else None})
     return job
@@ -116,6 +118,9 @@ def retry_failed_captures(*, execute=False, expected_generation=None, expected_l
 def retry_job(identity):
     from .catalog import get_entity
     job = get_entity(Job, identity)
+    if job.kind == "classification":
+        from .local_ai import require_owner
+        require_owner(job)
     if job.state in ("queued", "retry_wait"):
         state = runtime_state()
         if state.maintenance_mode:
@@ -130,6 +135,9 @@ def retry_job(identity):
                 raise ApiError("ATTEMPT_EXPIRED", "网页采集设置已变化，请重新刷新", 409)
         # Repeated clicks on the same waiting job never create another job.
         if job.state == "queued":
+            if job.execution_state == "storage_blocked":
+                job.execution_state, job.error_code = "waiting_device", ""
+                job.save(update_fields=["execution_state", "error_code"])
             return job
         now = timezone.now()
         changed = Job.objects.filter(pk=job.id, state="retry_wait").update(
@@ -160,35 +168,26 @@ def retry_job(identity):
     return new
 
 
-def initial_bookmark(identity):
+def initial_bookmark(identity, device_id=None):
     bookmark = Bookmark.objects.filter(pk=identity).first()
     if not bookmark:
         return
     enqueue("metadata", identity, priority=45, input_revision=bookmark.capture_epoch, active_key=f"metadata:{identity}:{bookmark.capture_epoch}")
     if bookmark.snapshot_enabled:
         request_refresh([identity], source="new", priority=40)
-    settings = library_settings()
-    if settings.active_ai_profile_id:
-        from .classification import verified_client
-        try:
-            verified_client(settings.active_ai_profile_id)
-        except Exception:
-            return
-        request_classification([identity], settings.active_ai_profile_id, priority=30)
+    if device_id:
+        request_classification([identity], priority=30, device_id=device_id)
 
 
 @transaction.atomic(using="library")
-def request_classification(bookmark_ids, profile_id=None, priority=50):
+def request_classification(bookmark_ids, profile_id=None, priority=50, *, device_id=None):
     ids = list(dict.fromkeys(str(i) for i in bookmark_ids))
     if not ids or len(ids) > 1000:
         raise ApiError("INVALID_BATCH", "请选择 1–1000 个网站")
     if Bookmark.objects.filter(pk__in=ids).count() != len(ids):
         raise ApiError("NOT_FOUND", "部分网站不存在", 404)
-    profile_id = profile_id or library_settings().active_ai_profile_id
-    if not profile_id:
-        raise ApiError("AI_UNCONFIGURED", "请先配置并验证 AI 服务")
-    from .classification import verified_client
-    verified_client(profile_id)
+    from .local_ai import require_device
+    device_id = device_id or require_device()
     from .submissions import supersede
     supersede(ids)
     # A new review replaces older work fully covered by this request. Otherwise
@@ -203,7 +202,7 @@ def request_classification(bookmark_ids, profile_id=None, priority=50):
     ClassificationProposal.objects.filter(bookmark_id__in=ids, status="pending").update(status="stale")
     group = JobGroup.objects.create(kind="classification", source="manual", requested_count=len(ids))
     for offset in range(0, len(ids), 10):
-        enqueue("classification", priority=priority, payload={"bookmark_ids": ids[offset:offset+10], "profile_id": str(profile_id), "group_id": str(group.id)}, group=group)
+        enqueue("classification", priority=priority, payload={"bookmark_ids": ids[offset:offset+10], "device_id": str(device_id), "group_id": str(group.id)}, group=group)
     return group
 
 
@@ -219,7 +218,11 @@ def schedule_due():
 def claim_next(prefer_background=False):
     if runtime_state().maintenance_mode:
         return None
-    qs = Job.objects.filter(state__in=("queued", "retry_wait"), available_at__lte=timezone.now())
+    qs = Job.objects.filter(state__in=("queued", "retry_wait"), available_at__lte=timezone.now()).exclude(kind__in=("classification", "ai_test"))
+    from .local_ai import protected_bookmarks
+    protected = protected_bookmarks()
+    if protected:
+        qs = qs.exclude(kind__in=("metadata", "capture"), target_id__in=protected)
     if prefer_background and qs.filter(priority__lte=10).exists():
         qs = qs.filter(priority__lte=10)
     job = qs.order_by("-priority", "available_at", "created_at").first()
@@ -333,6 +336,9 @@ def group_status(group):
     state = group_state(states)
     completed = states["succeeded"] + states["failed"] + states["cancelled"]
     result = {"id": str(group.id), "group_id": str(group.id), "kind": group.kind, "state": state, "requested_count": group.requested_count, "total": len(jobs), "completed": completed, "counts": states, "jobs": [{"id": str(j.id), "bookmark_id": str(j.target_id) if j.target_id else None, "variant": j.variant, "state": j.state, "error_code": j.error_code} for j in jobs], "skipped": max(0, group.requested_count - len({j.target_id for j in jobs if j.target_id})) if group.kind == "refresh" else 0}
+    for job, row in zip(jobs, result["jobs"]):
+        row.update(kind=job.kind, execution_state=job.execution_state,
+            execution_device_id=str(job.execution_device_id) if job.execution_device_id else None)
     if group.kind == "classification":
         from .models import ClassificationProposal, ClassificationTaxonomy
         result["phase"] = "classifying" if ClassificationTaxonomy.objects.exists() else "planning"

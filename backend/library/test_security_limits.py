@@ -7,6 +7,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 
 from runtime.models import RuntimeState
+from .testing_local_ai import bind_device
 from runtime.testing import force_credential_login
 from .ai_transport import AIError, normalize_endpoint
 from .importing import import_plan, preview_import, start_import, execute_import, MAX_EXECUTION_ENTRIES
@@ -22,6 +23,7 @@ class SecurityLimitsTests(TestCase):
         LibrarySettings.objects.create(pk=1)
         user = get_user_model().objects.create_user('owner')
         force_credential_login(self.client, user)
+        bind_device(self)
 
     def preview(self, count=1):
         content = ('<DL>' + ''.join(f'<A HREF="https://example.org/{n}">Site {n}</A>' for n in range(count)) + '</DL>').encode()

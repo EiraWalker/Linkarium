@@ -19,7 +19,9 @@ routes = {
     "/tags": ["get", "post"], "/tags/{id}": ["patch", "delete"],
     "/job-groups": ["get"], "/job-groups/{id}": ["get"], "/jobs": ["get"], "/jobs/{id}": ["get"], "/jobs/{id}/cancel": ["post"], "/jobs/{id}/retry": ["post"],
     "/snapshots/{id}/preview": ["get"], "/snapshots/delete-preview": ["post"], "/snapshots/bulk-delete": ["post"],
-    "/ai-profiles": ["get", "post"], "/ai-profiles/{id}": ["get", "patch"], "/ai-profiles/{id}/test": ["post"],
+    "/ai-profiles": ["get"], "/ai-profiles/{id}": ["get"],
+    "/local-ai/devices": ["post"], "/local-ai/device": ["get"], "/local-ai/claim": ["post"],
+    "/local-ai/heartbeat": ["post"], "/local-ai/pause": ["post"], "/local-ai/result": ["post"],
     "/classification/batches": ["post"], "/classification/proposals": ["get"], "/classification/proposals/{id}": ["patch"], "/classification/accept": ["post"], "/classification/reject": ["post"],
     "/imports": ["get", "post"], "/imports/preview": ["post"], "/imports/{id}": ["get"], "/imports/{id}/execute": ["post"], "/imports/{id}/review-notified": ["post"],
     "/backups": ["post"], "/backups/{id}": ["get"], "/backups/{id}/download": ["get"],
@@ -82,11 +84,16 @@ for route, methods in routes.items():
         parameters = []
         if "{id}" in route:
             parameters.append({"name": "id", "in": "path", "required": True, "schema": {"type": "string", "format": "uuid"}})
+        if route.startswith("/local-ai/") and route != "/local-ai/devices" or route in ("/classification/batches", "/imports/{id}/execute"):
+            for header in ("X-Linkarium-Device", "X-Linkarium-Device-Proof"):
+                parameters.append({"name": header, "in": "header", "required": True, "schema": {"type": "string"}, "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"})
         if method != "get":
             parameters.append({"name": "X-CSRFToken", "in": "header", "required": True, "schema": {"type": "string"}, "description": "Masked csrf_token returned by GET /session; rotate after login"})
             runtime = route in ("/backups", "/restores/validate", "/data/clear", "/data/reset") or route.endswith("/execute") and route.startswith("/restores")
             parameters.append({"name": "Idempotency-Key", "in": "header", "required": runtime, "schema": {"type": "string", "maxLength": 128}})
             name = "PasswordLogin" if route == "/session/login" else "BulkBookmarks" if route == "/bookmarks/bulk" else "BookmarkWrite" if route in ("/bookmarks", "/bookmarks/{id}") else "FolderWrite" if route in ("/folders", "/folders/{id}") else "AIProfileWrite" if route.startswith("/ai-profiles") and not route.endswith("/test") else "RestoreConfirmation" if route.startswith("/restores/") and route.endswith("/execute") else None
+            if route.startswith("/local-ai/"):
+                entry["description"] = "Device-owned execution protocol 1; see docs/api-contract.md section 7. No provider secrets accepted. Model response and checkpoint are committed atomically."
             if route in ("/classification/accept", "/classification/reject"):
                 name = "ClassificationReview"
             if route == "/capture-network":

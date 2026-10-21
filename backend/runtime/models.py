@@ -111,6 +111,15 @@ class ProviderSecret(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
 
+class ExecutionDevice(models.Model):
+    """Runtime identity; provider credentials never cross this boundary."""
+    id = models.UUIDField(primary_key=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    proof_digest = models.CharField(max_length=64)
+    name = models.CharField(max_length=100)
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+
 class MaintenanceOperation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     kind = models.CharField(max_length=20)

@@ -14,6 +14,7 @@ TRUSTED_LIBRARY_MIGRATIONS = (
     '0003_classificationtaxonomy_folder_created_by_ai',
     '0004_import_execution_budgets',
     '0005_extension_submission',
+    '0006_local_ai_execution',
 )
 
 # Register before Django opens its migration connection. Only shipped migration

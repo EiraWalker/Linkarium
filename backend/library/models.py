@@ -89,6 +89,8 @@ class JobGroup(models.Model):
 
 
 class Job(models.Model):
+    execution_device_id = models.UUIDField(null=True, db_index=True)
+    execution_state = models.CharField(max_length=32, blank=True)
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     kind = models.CharField(max_length=32)
     target_id = models.UUIDField(null=True)
@@ -211,6 +213,7 @@ class PageMetadata(models.Model):
 
 
 class ClassificationBatch(models.Model):
+    is_local = models.BooleanField(default=False)
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     job_group = models.ForeignKey(JobGroup, null=True, on_delete=models.SET_NULL)
     profile = models.ForeignKey(AIProfile, null=True, on_delete=models.SET_NULL)
@@ -237,6 +240,7 @@ class ClassificationProposal(Entity):
 
 
 class ImportBatch(models.Model):
+    execution_device_id = models.UUIDField(null=True)
     confirmation_digest = models.CharField(max_length=64, blank=True)
     execution_authorization = models.TextField(blank=True)
     capture_budget = models.PositiveIntegerField(default=0)
@@ -278,6 +282,7 @@ class BookmarkSource(models.Model):
 
 
 class ExtensionSubmission(Entity):
+    execution_device_id = models.UUIDField(null=True)
     """Durable authority to automatically file one newly submitted bookmark."""
     bookmark = models.ForeignKey(Bookmark, null=True, on_delete=models.SET_NULL)
     created = models.BooleanField(default=True)
@@ -295,3 +300,21 @@ class ExtensionSubmission(Entity):
     error_code = models.CharField(max_length=64, blank=True)
     metadata_error_code = models.CharField(max_length=64, blank=True)
     applied_at = models.DateTimeField(null=True)
+
+
+class LocalAIRequest(models.Model):
+    """Immutable prompt checkpoint and atomic result receipt, scoped to a job."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    job = models.ForeignKey(Job, on_delete=models.CASCADE, related_name="local_requests")
+    stage = models.CharField(max_length=24)
+    messages = models.JSONField()
+    schema = models.JSONField()
+    context = models.JSONField()
+    prompt_digest = models.CharField(max_length=64)
+    result_digest = models.CharField(max_length=64, blank=True)
+    receipt = models.JSONField(default=dict)
+    completed_at = models.DateTimeField(null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["job", "stage"], name="local_ai_stage_unique")]

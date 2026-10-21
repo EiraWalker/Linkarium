@@ -1,11 +1,12 @@
 {
   "name": "linkarium-firefox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "license": "AGPL-3.0-only",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc && node package.mjs"
+    "build": "tsc && node package.mjs",
+    "test": "tsc && node --test tests/executor.test.cjs"
   },
   "devDependencies": {
     "@types/firefox-webext-browser": "^120.0.4",

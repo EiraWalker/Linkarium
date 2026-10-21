@@ -158,6 +158,8 @@ export interface Proposal extends Entity {
   expected_tree_revision?: number;
 }
 export interface Job {
+  execution_device_id?: string | null;
+  execution_state?: string;
   id: string;
   state: string;
   kind?: string;

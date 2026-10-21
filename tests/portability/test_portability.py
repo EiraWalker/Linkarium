@@ -454,6 +454,8 @@ class CatalogPortabilityTests(TransactionTestCase):
         LibrarySettings.objects.using("library").get_or_create(pk=1)
 
     def test_import_skips_existing_without_overwrite_and_retains_original_path(self):
+        from library.testing_local_ai import bind_device
+        bind_device(self)
         from library.models import Bookmark, BookmarkSource, Folder
         from library.catalog import create_bookmark
         existing, _ = create_bookmark({"url": "https://example.com", "notes": "do not change", "snapshot_enabled": False})
@@ -495,7 +497,7 @@ class CatalogPortabilityTests(TransactionTestCase):
             verified=True, verified_library_epoch=RuntimeState.objects.using("default").get(pk=1).library_epoch)
         with self.assertRaises(AIError) as caught:
             verified_client(profile.id)
-        self.assertEqual(caught.exception.code, "AI_UNCONFIGURED")
+        self.assertEqual(caught.exception.code, "LOCAL_AI_ONLY")
 
     def configured_profile(self, verified=True):
         from library.models import AIProfile
@@ -506,49 +508,24 @@ class CatalogPortabilityTests(TransactionTestCase):
             verified=verified, verified_library_epoch=RuntimeState.objects.using("default").get(pk=1).library_epoch)
         return profile
 
-    def test_cancelled_ai_cannot_commit_proposals_after_network_returns(self):
+    def test_retired_server_entrypoints_fail_closed_even_with_verified_historical_credentials(self):
         from library.models import Bookmark, ClassificationProposal
-        profile = self.configured_profile()
-        bookmark = Bookmark.objects.create(original_url="https://example.com/", canonical_url="https://example.com/", domain="example.com")
-        allowed = {"value": True}
-        def returned(*args, **kwargs):
-            allowed["value"] = False
-            return {"items": [{"bookmark_id": str(bookmark.id), "target": {"parent_folder_id": None,
-                    "new_segments": ["Design"]}, "reason": "test"}]}
-        with patch("library.classification.ChatClient.complete", side_effect=returned):
-            with self.assertRaises(Exception) as caught:
-                generate_proposals([str(bookmark.id)], profile.id, execution_guard=lambda: allowed["value"])
-        self.assertEqual(caught.exception.code, "ATTEMPT_EXPIRED")
-        self.assertEqual(ClassificationProposal.objects.count(), 0)
-
-    def test_changed_profile_cannot_commit_old_ai_response(self):
-        from library.models import AIProfile, Bookmark, ClassificationProposal
-        profile = self.configured_profile()
-        bookmark = Bookmark.objects.create(original_url="https://example.com/", canonical_url="https://example.com/", domain="example.com")
-        def returned(*args, **kwargs):
-            AIProfile.objects.filter(pk=profile.id).update(revision=2)
-            return {"items": [{"bookmark_id": str(bookmark.id), "target": {"parent_folder_id": None,
-                    "new_segments": ["Design"]}, "reason": "test"}]}
-        with patch("library.classification.ChatClient.complete", side_effect=returned):
-            with self.assertRaises(AIError) as caught:
-                generate_proposals([str(bookmark.id)], profile.id)
-        self.assertEqual(caught.exception.code, "AI_CONFIG_STALE")
-        self.assertEqual(ClassificationProposal.objects.count(), 0)
-
-    def test_cancelled_api_test_cannot_mark_credentials_verified(self):
         from runtime.models import ProviderSecret
-        profile = self.configured_profile(verified=False)
-        allowed = {"value": True}
-        def returned(*args, **kwargs):
-            allowed["value"] = False
-            return {"protocol": "chat-completions"}
-        with patch("library.classification.ChatClient.test", side_effect=returned):
-            with self.assertRaises(Exception) as caught:
-                test_profile(profile.id, execution_guard=lambda: allowed["value"])
-        self.assertEqual(caught.exception.code, "ATTEMPT_EXPIRED")
-        self.assertFalse(ProviderSecret.objects.using("default").get(profile_id=profile.id).verified)
+        profile = self.configured_profile()
+        bookmark = Bookmark.objects.create(original_url="https://example.com/", canonical_url="https://example.com/", domain="example.com")
+        with patch("library.ai_transport.httpx.Client") as network:
+            for operation in (lambda: generate_proposals([str(bookmark.id)], profile.id),
+                    lambda: test_profile(profile.id), lambda: verified_client(profile.id)):
+                with self.assertRaises(AIError) as caught:
+                    operation()
+                self.assertEqual(caught.exception.code, "LOCAL_AI_ONLY")
+            network.assert_not_called()
+        self.assertEqual(ClassificationProposal.objects.count(), 0)
+        self.assertEqual(ProviderSecret.objects.get(profile_id=profile.id).api_key, "test-only")
 
     def test_cancelled_import_does_not_commit_next_entry(self):
+        from library.testing_local_ai import bind_device
+        bind_device(self)
         from library.models import Bookmark
         batch = preview_import(CHROME_HTML)
         start_import(batch, import_plan(batch)["confirmation_token"])
@@ -660,8 +637,8 @@ class MaintenanceFailureTests(TransactionTestCase):
         database = self.generation / "library.sqlite3"
         with closing(sqlite3.connect(database)) as connection:
             connection.execute("""INSERT INTO library_job
-                (id,kind,target_id,variant,state,priority,available_at,attempt_count,active_attempt_id,max_attempts,active_key,generation,library_epoch,input_revision,payload,result,error_code,created_at,updated_at)
-                VALUES(?, 'classification',NULL,'','queued',40,CURRENT_TIMESTAMP,0,NULL,3,'old-active','initial',1,1,'{}','{}','',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)""", (uuid.uuid4().hex,))
+                (id,kind,target_id,variant,state,priority,available_at,attempt_count,active_attempt_id,max_attempts,active_key,generation,library_epoch,input_revision,payload,result,error_code,created_at,updated_at,execution_state)
+                VALUES(?, 'classification',NULL,'','queued',40,CURRENT_TIMESTAMP,0,NULL,3,'old-active','initial',1,1,'{}','{}','',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'waiting_device')""", (uuid.uuid4().hex,))
             connection.commit()
         _cancel_candidate_work(database)
         with closing(sqlite3.connect(database)) as connection:

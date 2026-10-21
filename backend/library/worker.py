@@ -213,29 +213,11 @@ def run_one(prefer_background=False):
                 else:
                     with performance.span("worker.publish_metadata", category="worker"):
                         publish_metadata(job, attempt, result)
-            elif job.kind == "classification":
-                if job.payload.get("submission_id"):
-                    from .submissions import classify
-                    classify(job, attempt)
-                    return True
-                from .classification import generate_proposals
-                from .ai_transport import request_budget
-                from .importing import reserve_ai_request
-                import_id = job.payload.get('import_id')
-                with performance.span("worker.classification", category="worker", count=len(job.payload["bookmark_ids"])):
-                    with request_budget((lambda: reserve_ai_request(import_id)) if import_id else None):
-                        result = generate_proposals(job.payload["bookmark_ids"], job.payload.get("profile_id"), execution_guard=lambda: queue.execution_valid(job, attempt), job_group_id=job.payload.get("group_id"))
-                queue.finish(job, attempt, {"proposal_count": result.get("count", 0) if isinstance(result, dict) else len(result)})
             elif job.kind == "import":
                 from .importing import execute_import
                 with performance.span("worker.import", category="worker"):
                     result = execute_import(job.target_id, execution_guard=lambda: queue.execution_valid(job, attempt))
                 queue.finish(job, attempt, {"import_id": str(job.target_id)})
-            elif job.kind == "ai_test":
-                from .classification import test_profile
-                with performance.span("worker.ai_test", category="worker"):
-                    result = test_profile(job.target_id, execution_guard=lambda: queue.execution_valid(job, attempt))
-                queue.finish(job, attempt, result)
             elif job.kind == "cleanup":
                 with performance.span("worker.cleanup", category="worker"):
                     cleanup_artifacts()
@@ -271,6 +253,10 @@ def run_one(prefer_background=False):
 
 def recover_expired():
     for job in Job.objects.filter(state="running"):
+        if job.kind == "classification":
+            from .local_ai import expire
+            expire(job)
+            continue
         attempt = JobAttempt.objects.filter(pk=job.active_attempt_id).first()
         if not attempt or attempt.lease_expires_at > timezone.now():
             continue
