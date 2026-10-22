@@ -499,7 +499,7 @@ export function App() {
           >
             <Icon name="refresh" />
             <span>
-              {currentTask ? `${jobName(currentTask.kind)} · ${stateLabel(currentTask.state)}` : "后台任务"}
+              {currentTask ? `${jobName(currentTask.kind, currentTask.source)} · ${stateLabel(currentTask.state)}` : "后台任务"}
               <small>
                 {currentTask
                   ? `${currentTask.completed ?? 0} / ${currentTask.total ?? 0}`
@@ -549,7 +549,7 @@ export function App() {
                   {group && !tasks.data?.groups.some((item) => item.id === group) && <option value={group}>当前任务 · {group.slice(0, 8)}</option>}
                   {tasks.data?.groups.map((item) => (
                     <option key={item.id} value={item.id}>
-                      {jobName(item.kind)} · {item.requested_count} 个网站 · {stateLabel(item.state)} · {item.created_at ? new Date(item.created_at).toLocaleString() : ""} · {item.id?.slice(0, 8)}
+                      {jobName(item.kind, item.source)} · {item.requested_count} 个网站 · {stateLabel(item.state)} · {item.created_at ? new Date(item.created_at).toLocaleString() : ""} · {item.id?.slice(0, 8)}
                     </option>
                   ))}
                 </select>
@@ -706,7 +706,9 @@ export function App() {
     </AppState.Provider>
   );
 }
-function jobName(kind?: string) {
+function jobName(kind?: string, source?: string) {
+  if (kind === "refresh" && source === "selection") return "抓取快照";
+  if (kind === "refresh" && (source === "folder" || source === "all")) return "刷新文件夹";
   return (
     (
       {

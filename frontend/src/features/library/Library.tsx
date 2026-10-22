@@ -145,6 +145,8 @@ export function Library({ viewport }: { viewport: HTMLDivElement }) {
     "move" | "add_tags" | "remove_tags" | "delete" | null
   >(null);
   const [checked, setChecked] = useState<Map<string, Entity>>(new Map());
+  const refreshAttempt = useRef<{ scope: string; ids: string; key: string } | null>(null);
+  const refreshingSelected = useRef(false);
   const [selectingAll, setSelectingAll] = useState(false);
   const selectRequest = useRef<AbortController | null>(null);
   const selectionScope = `${app.libraryIdentity}:${selectionQuery}`;
@@ -313,6 +315,35 @@ export function Library({ viewport }: { viewport: HTMLDivElement }) {
     } catch (e) {
       setError(errorMessage(e));
     } finally {
+      setBusy(null);
+    }
+  }
+  async function refreshSelected() {
+    if (busy || selectingAll || refreshingSelected.current || checked.size === 0) return;
+    const bookmarkIds = [...checked.keys()].sort();
+    if (bookmarkIds.length > 1000) {
+      setError("每次最多选择 1000 个网站抓取快照，请缩小选择范围。");
+      return;
+    }
+    const ids = bookmarkIds.join(",");
+    if (refreshAttempt.current?.scope !== selectionScope || refreshAttempt.current.ids !== ids)
+      refreshAttempt.current = { scope: selectionScope, ids, key: idempotencyKey() };
+    refreshingSelected.current = true;
+    setBusy("refresh_selection");
+    setError("");
+    try {
+      const { data } = await request<{ group_id: string; skipped: number }>("/bookmarks/refresh", {
+        method: "POST", body: { bookmark_ids: bookmarkIds }, key: refreshAttempt.current.key,
+      });
+      refreshAttempt.current = null;
+      app.trackGroup(data.group_id);
+      app.notify(data.skipped === bookmarkIds.length
+        ? `所选 ${bookmarkIds.length} 个网站均已关闭快照，已记录跳过的后台任务。`
+        : `已提交所选 ${bookmarkIds.length} 个网站的快照任务${data.skipped ? `，其中 ${data.skipped} 个已关闭快照` : ""}。`);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      refreshingSelected.current = false;
       setBusy(null);
     }
   }
@@ -496,6 +527,7 @@ export function Library({ viewport }: { viewport: HTMLDivElement }) {
                   删除
                 </Button>
                 <Button disabled={selectingAll} onClick={() => setChecked(new Map())}>取消选择</Button>
+                <Button icon="refresh" disabled={selectingAll || !!busy} onClick={() => void refreshSelected()}>抓取快照</Button>
               </>
             )}
           </div>

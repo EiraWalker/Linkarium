@@ -358,6 +358,68 @@ class CatalogTests(TestCase):
         self.assertEqual(Job.objects.filter(kind="capture").count(), 2)
         self.assertEqual(set(first.members.values_list("job_id", flat=True)), set(second.members.values_list("job_id", flat=True)))
 
+    def test_selected_refresh_only_queues_enabled_selected_sites(self):
+        enabled = self.add("https://example.org/selected", snapshot_enabled=True, auto_refresh_paused=True)
+        disabled = self.add("https://example.org/disabled", snapshot_enabled=False)
+        outside = self.add("https://example.org/outside", snapshot_enabled=True)
+        body = {"bookmark_ids": [str(enabled.id), str(disabled.id)]}
+        response = self.request_json("post", "bookmarks/refresh", body,
+                                     HTTP_IDEMPOTENCY_KEY="selected-refresh")
+        self.assertEqual(response.status_code, 202, response.content)
+        group = response.json()["data"]
+        self.assertEqual(group["requested_count"], 2)
+        self.assertEqual(group["skipped"], 1)
+        self.assertEqual({job["bookmark_id"] for job in group["jobs"]}, {str(enabled.id)})
+        self.assertEqual({job["variant"] for job in group["jobs"]}, {"desktop", "mobile"})
+        listing = self.client.get("/api/v1/job-groups").json()["data"]["groups"]
+        self.assertEqual(listing[0]["source"], "selection")
+        self.assertEqual(self.request_json("post", "bookmarks/refresh", body,
+                         HTTP_IDEMPOTENCY_KEY="selected-refresh").json(), response.json())
+        conflict = self.request_json("post", "bookmarks/refresh", {"bookmark_ids": [str(outside.id)]},
+                                     HTTP_IDEMPOTENCY_KEY="selected-refresh")
+        self.assertEqual(conflict.json()["error"]["code"], "IDEMPOTENCY_CONFLICT")
+        repeated = self.request_json("post", "bookmarks/refresh", body,
+                                     HTTP_IDEMPOTENCY_KEY="selected-refresh-again").json()["data"]
+        self.assertNotEqual(repeated["group_id"], group["group_id"])
+        self.assertEqual({job["id"] for job in repeated["jobs"]}, {job["id"] for job in group["jobs"]})
+        self.assertEqual(Job.objects.filter(kind="capture", target_id=outside.id).count(), 0)
+        self.assertEqual(Job.objects.filter(kind="capture").count(), 2)
+
+    def test_selected_refresh_rejects_invalid_scope_without_creating_a_group(self):
+        site = self.add("https://example.org/valid", snapshot_enabled=True)
+        valid = str(site.id)
+        cases = [[], [valid, valid], [valid, str(uuid.uuid4())],
+                 [valid, "bad-id"], [valid] * 1001]
+        for index, ids in enumerate(cases):
+            response = self.request_json("post", "bookmarks/refresh", {"bookmark_ids": ids},
+                                         HTTP_IDEMPOTENCY_KEY=f"invalid-refresh-{index}")
+            self.assertIn(response.status_code, (400, 404), response.content)
+            self.assertEqual(JobGroup.objects.count(), 0)
+            self.assertEqual(Job.objects.filter(kind="capture").count(), 0)
+        response = self.request_json("post", "bookmarks/refresh", {"bookmark_ids": [valid]})
+        self.assertEqual(response.json()["error"]["code"], "IDEMPOTENCY_REQUIRED")
+
+    def test_selected_refresh_of_disabled_sites_is_reported_as_skipped(self):
+        site = self.add("https://example.org/disabled-only", snapshot_enabled=False)
+        response = self.request_json("post", "bookmarks/refresh", {"bookmark_ids": [str(site.id)]},
+                                     HTTP_IDEMPOTENCY_KEY="disabled-only-refresh")
+        self.assertEqual(response.status_code, 202, response.content)
+        self.assertEqual(response.json()["data"]["state"], "skipped")
+        self.assertEqual(response.json()["data"]["completed_sites"], 1)
+        listing = self.client.get("/api/v1/job-groups").json()["data"]["groups"]
+        self.assertEqual(listing[0]["skipped"], 1)
+
+    def test_selected_refresh_requires_owner_and_csrf(self):
+        site = self.add("https://example.org/protected", snapshot_enabled=True)
+        path = "/api/v1/bookmarks/refresh"
+        body = json.dumps({"bookmark_ids": [str(site.id)]})
+        headers = {"content_type": "application/json", "HTTP_IDEMPOTENCY_KEY": "protected-refresh"}
+        self.assertEqual(Client().post(path, body, **headers).status_code, 401)
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.cookies = self.client.cookies.copy()
+        self.assertEqual(csrf_client.post(path, body, **headers).status_code, 403)
+        self.assertEqual(JobGroup.objects.count(), 0)
+
     def test_all_sites_refresh_works_without_physical_folders_and_deduplicates(self):
         enabled = [self.add(f"https://example.org/all-{n}", snapshot_enabled=True) for n in range(2)]
         self.add("https://example.org/disabled")

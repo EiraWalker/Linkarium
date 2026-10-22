@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import shutil
+import uuid
 from datetime import timedelta
 from pathlib import Path
 from django.conf import settings
@@ -513,6 +514,27 @@ def route_request(request, route):
         require_method(request, "POST")
         data = payload(request)
         return idempotent(request, data, lambda: ok(bulk_bookmarks(data)))
+    if route == "bookmarks/refresh":
+        require_method(request, "POST")
+        data = payload(request)
+        if not request.headers.get("Idempotency-Key"):
+            raise ApiError("IDEMPOTENCY_REQUIRED", "此操作需要请求唯一键")
+
+        def refresh_selection():
+            raw_ids = data.get("bookmark_ids")
+            if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= MAX_BOOKMARK_BATCH:
+                raise ApiError("INVALID_BATCH", f"每次请选择 1–{MAX_BOOKMARK_BATCH} 个网站")
+            try:
+                ids = [str(uuid.UUID(item)) for item in raw_ids if isinstance(item, str)]
+            except ValueError:
+                raise ApiError("INVALID_BATCH", "所选网站 ID 无效")
+            if len(ids) != len(raw_ids) or len(set(ids)) != len(ids):
+                raise ApiError("INVALID_BATCH", "请选择不同的有效网站")
+            if Bookmark.objects.filter(pk__in=ids).count() != len(ids):
+                raise ApiError("BOOKMARK_NOT_FOUND", "所选网站不存在或已删除", 404)
+            return ok(queue.group_status(queue.request_refresh(ids, source="selection")), 202)
+
+        return idempotent(request, data, refresh_selection)
     if parts[0] == "bookmarks" and len(parts) >= 2:
         bookmark = catalog.get_entity(Bookmark, parts[1])
         if len(parts) == 2:

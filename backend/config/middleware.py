@@ -131,7 +131,7 @@ def _performance_route(request):
     route = path[len("/api/v1/"):]
     fixed = {"session", "session/login", "session/logout", "data/clear", "data/reset",
         "runtime/status", "capture-network", "settings", "bookmarks", "bookmarks/delete-preview",
-        "bookmarks/bulk", "folders", "tags", "job-groups", "jobs", "snapshots/delete-preview",
+        "bookmarks/bulk", "bookmarks/refresh", "folders", "tags", "job-groups", "jobs", "snapshots/delete-preview",
         "snapshots/bulk-delete", "ai-profiles", "classification/batches", "classification/proposals",
         "classification/accept", "classification/reject", "imports", "imports/preview", "backups",
         "restores/validate", "maintenance-operations/lookup"}

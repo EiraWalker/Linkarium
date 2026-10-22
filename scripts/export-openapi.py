@@ -11,7 +11,7 @@ routes = {
     "/session/passkeys/{id}": ["patch", "delete"],
     "/settings": ["get", "patch"], "/capture-network": ["get", "patch"], "/runtime/status": ["get"], "/runtime/uploads": ["post"],
     "/bookmarks": ["get", "post"], "/bookmarks/{id}": ["get", "patch"],
-    "/bookmarks/delete-preview": ["post"], "/bookmarks/bulk": ["post"],
+    "/bookmarks/delete-preview": ["post"], "/bookmarks/bulk": ["post"], "/bookmarks/refresh": ["post"],
     "/bookmarks/{id}/refresh": ["post"], "/bookmarks/{id}/snapshots": ["get"],
     "/folders": ["get", "post"], "/folders/{id}": ["patch", "delete"],
     "/folders/all/refresh-preview": ["post"], "/folders/all/refresh": ["post"],
@@ -71,6 +71,9 @@ schemas["EnrollmentGrant"] = {"type": "object", "required": ["enrollment_url", "
     "enrollment_url": {"type": "string", "format": "uri"}, "authorization_code": {"type": "string", "description": "Shown once; never embedded in the URL or QR"},
     "expires_at": {"type": "string", "format": "date-time", "description": "Absolute deadline, five minutes from issuance"}}}
 schemas["BookmarkRevisionItems"] = {**schemas["RevisionItems"], "maxItems": 1000}
+schemas["SelectedSnapshotRefresh"] = {"type": "object", "required": ["bookmark_ids"], "properties": {
+    "bookmark_ids": {"type": "array", "minItems": 1, "maxItems": 1000, "uniqueItems": True,
+                     "items": {"type": "string", "format": "uuid"}}}}
 schemas["ClassificationReview"] = {"type": "object", "required": ["items"], "properties": {"items": {"$ref": "#/components/schemas/BookmarkRevisionItems"}, "tree_revision": {"type": "integer", "minimum": 1}}}
 schemas["BulkBookmarks"]["properties"]["items"] = {"$ref": "#/components/schemas/BookmarkRevisionItems"}
 schemas["CaptureNetworkWrite"] = {"type": "object", "required": ["mode"], "properties": {
@@ -89,7 +92,7 @@ for route, methods in routes.items():
                 parameters.append({"name": header, "in": "header", "required": True, "schema": {"type": "string"}, "description": "Registered initiating device identity; supplements owner cookie, never a provider API key"})
         if method != "get":
             parameters.append({"name": "X-CSRFToken", "in": "header", "required": True, "schema": {"type": "string"}, "description": "Masked csrf_token returned by GET /session; rotate after login"})
-            runtime = route in ("/backups", "/restores/validate", "/data/clear", "/data/reset") or route.endswith("/execute") and route.startswith("/restores")
+            runtime = route in ("/backups", "/restores/validate", "/data/clear", "/data/reset", "/bookmarks/refresh") or route.endswith("/execute") and route.startswith("/restores")
             parameters.append({"name": "Idempotency-Key", "in": "header", "required": runtime, "schema": {"type": "string", "maxLength": 128}})
             name = "PasswordLogin" if route == "/session/login" else "BulkBookmarks" if route == "/bookmarks/bulk" else "BookmarkWrite" if route in ("/bookmarks", "/bookmarks/{id}") else "FolderWrite" if route in ("/folders", "/folders/{id}") else "AIProfileWrite" if route.startswith("/ai-profiles") and not route.endswith("/test") else "RestoreConfirmation" if route.startswith("/restores/") and route.endswith("/execute") else None
             if route.startswith("/local-ai/"):
@@ -98,6 +101,9 @@ for route, methods in routes.items():
                 name = "ClassificationReview"
             if route == "/capture-network":
                 name = "CaptureNetworkWrite"
+            if route == "/bookmarks/refresh":
+                name = "SelectedSnapshotRefresh"
+                entry["description"] = "Create one refresh group for selected bookmark IDs only; enabled sites queue desktop and mobile captures, disabled sites are skipped."
             if route == "/runtime/uploads":
                 name = "UploadAdmission"
             if route == "/imports/{id}/execute":

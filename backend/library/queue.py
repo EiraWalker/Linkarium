@@ -314,13 +314,15 @@ def task_catalog(number=1, size=48):
     pending = ClassificationProposal.objects.filter(batch__job_group_id=OuterRef("pk"), status="pending").values("batch__job_group_id").annotate(n=Count("id")).values("n")
     counts = {f"n_{state}": Count("members", filter=Q(members__job__state=state)) for state in (*ACTIVE, *TERMINAL)}
     details = {}
-    for group in JobGroup.objects.filter(pk__in=needed).annotate(**counts, pending_count=Subquery(pending)):
+    for group in JobGroup.objects.filter(pk__in=needed).annotate(**counts, pending_count=Subquery(pending), n_sites=Count("members__job__target_id", distinct=True)):
         states = {state: getattr(group, f"n_{state}") for state in (*ACTIVE, *TERMINAL)}
         details[group.id] = {"id": str(group.id), "kind": group.kind, "source": group.source,
                      "created_at": group.created_at.isoformat(), "requested_count": group.requested_count,
                      "state": group_state(states), "total": sum(states.values()),
                      "completed": sum(states[s] for s in TERMINAL), "counts": states,
                      "pending_count": group.pending_count or 0}
+        if group.kind == "refresh":
+            details[group.id]["skipped"] = max(0, group.requested_count - group.n_sites)
     from .submissions import annotate_groups
     annotate_groups(details.values())
     return [details[identity] for identity in selected if identity in details], {
@@ -335,7 +337,7 @@ def group_status(group):
     states = {state: sum(job.state == state for job in jobs) for state in (*ACTIVE, *TERMINAL)}
     state = group_state(states)
     completed = states["succeeded"] + states["failed"] + states["cancelled"]
-    result = {"id": str(group.id), "group_id": str(group.id), "kind": group.kind, "state": state, "requested_count": group.requested_count, "total": len(jobs), "completed": completed, "counts": states, "jobs": [{"id": str(j.id), "bookmark_id": str(j.target_id) if j.target_id else None, "variant": j.variant, "state": j.state, "error_code": j.error_code} for j in jobs], "skipped": max(0, group.requested_count - len({j.target_id for j in jobs if j.target_id})) if group.kind == "refresh" else 0}
+    result = {"id": str(group.id), "group_id": str(group.id), "kind": group.kind, "source": group.source, "state": state, "requested_count": group.requested_count, "total": len(jobs), "completed": completed, "counts": states, "jobs": [{"id": str(j.id), "bookmark_id": str(j.target_id) if j.target_id else None, "variant": j.variant, "state": j.state, "error_code": j.error_code} for j in jobs], "skipped": max(0, group.requested_count - len({j.target_id for j in jobs if j.target_id})) if group.kind == "refresh" else 0}
     for job, row in zip(jobs, result["jobs"]):
         row.update(kind=job.kind, execution_state=job.execution_state,
             execution_device_id=str(job.execution_device_id) if job.execution_device_id else None)
@@ -369,7 +371,7 @@ def group_status(group):
                 partial_sites += 1
             else:
                 failed_sites += 1
-        result.update(completed_sites=completed_sites, partial_sites=partial_sites, succeeded_sites=succeeded_sites, failed_sites=failed_sites, device_tasks={"total": len(jobs), "completed": completed, "counts": states})
+        result.update(completed_sites=completed_sites + result["skipped"], partial_sites=partial_sites, succeeded_sites=succeeded_sites, failed_sites=failed_sites, device_tasks={"total": len(jobs), "completed": completed, "counts": states})
     from .submissions import annotate_groups
     annotate_groups([result])
     return result

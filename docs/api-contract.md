@@ -99,6 +99,7 @@ BookmarkSummary 包含 `id,revision,title,url,domain,folder_path,tags,is_starred
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | POST | /bookmarks/{id}/refresh | 单站立即刷新，返回两设备任务；关闭快照时返回 skipped 原因 |
+| POST | /bookmarks/refresh | 对明确选中的 1–1000 个网站手动抓取快照；请求体 `{bookmark_ids:[UUID,…]}`，要求 `Idempotency-Key`，返回 202 与可追踪任务批次 |
 | POST | /folders/{id}/refresh-preview | 显示子树 eligible/disabled/active 数量 |
 | POST | /folders/{id}/refresh | 递归排队并去重；不依赖前端当前分页 |
 | POST | /folders/all/refresh-preview | “全部网站”虚拟文件夹的全库 eligible/disabled/active 数量，包含未分类 |
@@ -112,6 +113,8 @@ BookmarkSummary 包含 `id,revision,title,url,domain,folder_path,tags,is_starred
 | GET/HEAD | /snapshots/{id}/preview | 鉴权 HTML 响应；HEAD 检查状态与内容类型且无正文；两种方法保持相同 sandbox/CSP 与 no-store |
 | POST | /snapshots/delete-preview | 校验指定版本是否可清理并预览影响 |
 | POST | /snapshots/bulk-delete | 批量删除旧版本，任何 current 指针被选中则整批拒绝 |
+
+多选抓取不会按当前搜索或文件夹范围扩展，且会在排队前整体验证非空、去重、数量上限和网站是否仍存在；无效请求不创建任务。有效网站分别排入桌面和手机任务，快照关闭的网站记入 `skipped`，暂停自动刷新不阻止手动抓取。重复在途任务复用同一设备 Job；同键同参重试返回同一任务批次。`GET /job-groups` 与批次详情的 `source=selection` 表示多选抓取，`source=folder` 或 `all` 表示文件夹或全库刷新。
 
 预览 URL 含版本 ID，内容不可变但鉴权逐次执行。响应使用 `Cache-Control: private, no-store`，避免退出后继续从缓存取得私有快照；备份下载同样鉴权。当前指针可变的接口不永久缓存。
 
@@ -127,7 +130,7 @@ JobAttempt 是内部执行身份，启动、取消和 launcher 退出通知均�
 
 分类任务组 `total/completed/counts` 的单位是 AI 批次，每批最多 10 个网站。`website_total/website_completed` 为网站数量，`succeeded_sites/failed_sites/cancelled_sites/queued_sites/running_sites/retrying_sites` 细分网站状态；`jobs[].website_count` 为单批网站数量。没有运行中请求的待执行任务组返回 `queued`，全部活动请求均在等待重试时返回 `retry_wait`，不再统一显示为 `running`。
 
-`GET /job-groups?page=1&page_size=20` 从业务库恢复进行中和已结束的任务组。`data.groups` 只包含 id、kind、source、created_at、requested_count、state、total、completed、counts、pending_count 摘要；不展开每组 jobs 或 AI 请求正文。排序为运行中、其他活动任务、已结束任务，各层按创建时间倒序。`data.active_count` 与 `data.pending_proposals` 是整库统计，不受当前页限制；`page.total` 为任务组数量。AI 结果经校验后立即保存为建议，网页轮询统计和校对列表；确认之前不会自动创建文件夹或移动网站。
+`GET /job-groups?page=1&page_size=20` 从业务库恢复进行中和已结束的任务组。`data.groups` 包含 id、kind、source、created_at、requested_count、state、total、completed、counts、pending_count 摘要；刷新任务组还包含 skipped（所选网站中未创建任务的数量）。不展开每组 jobs 或 AI 请求正文。排序为运行中、其他活动任务、已结束任务，各层按创建时间倒序。`data.active_count` 与 `data.pending_proposals` 是整库统计，不受当前页限制；`page.total` 为任务组数量。AI 结果经校验后立即保存为建议，网页轮询统计和校对列表；确认之前不会自动创建文件夹或移动网站。
 
 `POST /jobs/{id}/retry` 创建或复用活动替代任务，并在单一业务事务内替换原任务组成员，使原进度继续追踪重试。共享任务更新其所有原任务组，不增加网站/批次分母。原任务仍保留历史状态；相同原任务重复重试在替代任务完成前去重。
 
