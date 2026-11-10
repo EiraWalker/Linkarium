@@ -866,13 +866,10 @@ def loopback_ready(port):
     return True
 
 
-def verify(args):
-    journal, receipt = load_prepared(args)
-    phase = json.loads(regular(journal / 'phase.json').read_bytes())['phase']
-    if phase not in ('starting', 'active'):
-        raise UpgradeError('ACTIVATION_NOT_READY_FOR_VERIFY')
-    current, metadata = current_release(args.commit)
-    if str(current) != receipt['new_release'] or metadata['version'] != args.version:
+def check_active(journal, receipt):
+    """Shared code/config binding; deliberately does not compare cold data."""
+    current, metadata = current_release(receipt['commit'])
+    if str(current) != receipt['new_release'] or metadata['version'] != receipt['version']:
         raise UpgradeError('ACTIVE_RELEASE_DRIFT')
     check_releases(receipt)
     overlay = journal / 'new-image.compose.json'
@@ -882,8 +879,17 @@ def verify(args):
     require_config_binding(receipt, container['runtime_config_sha256'])
     original = regular(journal / 'production.env').read_bytes()
     if (hashlib.sha256(original).hexdigest() != receipt['env_sha256'] or
-            regular(BASE / 'production.env').read_bytes() != updated_env(original, args.version, args.commit)):
+            regular(BASE / 'production.env').read_bytes() != updated_env(original, receipt['version'], receipt['commit'])):
         raise UpgradeError('ACTIVE_ENV_DRIFT')
+    return current, metadata, container
+
+
+def verify(args):
+    journal, receipt = load_prepared(args)
+    phase = json.loads(regular(journal / 'phase.json').read_bytes())['phase']
+    if phase not in ('starting', 'active'):
+        raise UpgradeError('ACTIVATION_NOT_READY_FOR_VERIFY')
+    current, metadata, container = check_active(journal, receipt)
     cold = verify_cold(journal)
     counts_before = json.loads(regular(journal / 'counts-before.json').read_bytes())
     require_counts(journal / 'data', counts_before, immutable=True)
@@ -908,19 +914,28 @@ def verify(args):
             'migration_additional_data_root': str(journal / 'data'), 'independent_disaster_backup': False}
 
 
-def rollback_code(journal, receipt, new_start_attempted):
+def rollback_code(journal, receipt, new_start_attempted, *, explicit=False):
     """Restore only env/current/image. NEVER copy/replace/delete business/auth DBs."""
+    counts_before, identity_before = {}, {}
     old, target = Path(receipt['old_release']), Path(receipt['new_release'])
     current, _ = current_release()
-    if current not in (old, target):
+    if current not in ((target,) if explicit else (old, target)):
         raise UpgradeError('ROLLBACK_CURRENT_DRIFT')
     original = regular(journal / 'production.env').read_bytes()
     if hashlib.sha256(original).hexdigest() != receipt['env_sha256']:
         raise UpgradeError('ROLLBACK_ENV_CHECKPOINT_CHANGED')
-    if regular(BASE / 'production.env').read_bytes() not in (original, updated_env(original, receipt['version'], receipt['commit'])):
+    replacement = updated_env(original, receipt['version'], receipt['commit'])
+    if regular(BASE / 'production.env').read_bytes() not in ((replacement,) if explicit else (original, replacement)):
         raise UpgradeError('ROLLBACK_LATEST_ENV_CHANGED')
     stop(current, journal / 'new-image.compose.json' if current == target else None)
     with file_lock(BASE / 'data/runtime/supervisor.lock'):
+        if explicit:
+            # Stopping releases actual network ports. Recheck disk bindings here;
+            # full running-container configuration is checked before/after stop.
+            if current_release(receipt['commit'])[0] != target:
+                raise UpgradeError('ROLLBACK_CURRENT_DRIFT')
+            if regular(BASE / 'production.env').read_bytes() != updated_env(original, receipt['version'], receipt['commit']):
+                raise UpgradeError('ACTIVE_ENV_DRIFT')
         if new_start_attempted:
             before = json.loads(regular(journal / 'rollback-guard.json').read_bytes())
             if rollback_guard(BASE / 'data') != before:
@@ -929,14 +944,78 @@ def rollback_code(journal, receipt, new_start_attempted):
         if digest(old / 'SHA256SUMS') != receipt['old_manifest_sha256']:
             raise UpgradeError('ROLLBACK_OLD_RELEASE_DRIFT')
         image_info(receipt['old_image_id'], receipt['old_metadata']['version'], receipt['expected_base'])
+        if explicit:
+            counts_before = idle_counts(BASE / 'data', require_idle=True, immutable=True)
+            identity_before = identity(BASE / 'data', immutable=True)
+            write_json(journal / 'rollback-counts-before.json', counts_before)
+            write_json(journal / 'rollback-identity-before.json', identity_before)
         atomic_bytes(BASE / 'production.env', original)
         set_current(old)
     overlay = pinned_overlay(journal, 'old', receipt['old_image_id'])
     start(old, overlay)
     container = require_container(old, receipt['old_metadata'], receipt['old_image_id'], overlay)
     require_config_binding(receipt, container['runtime_config_sha256'])
-    loopback_ready(receipt['port'])
+    ready = loopback_ready(receipt['port'])
+    result = {}
+    if explicit:
+        if current_release(receipt['expected_base'])[0] != old:
+            raise UpgradeError('ROLLBACK_CURRENT_DRIFT')
+        if regular(BASE / 'production.env').read_bytes() != original:
+            raise UpgradeError('ROLLBACK_ENV_DRIFT')
+        if json.loads(regular(overlay).read_bytes()) != {'services': {'app': {'image': receipt['old_image_id'], 'pull_policy': 'never'}}}:
+            raise UpgradeError('PINNED_OVERLAY_DRIFT')
+        guard = json.loads(regular(journal / 'rollback-guard.json').read_bytes())
+        if rollback_guard(BASE / 'data', immutable=False) != guard:
+            raise UpgradeError('ROLLBACK_REFUSED_SCHEMA_OR_COMPRESSION_CHANGED')
+        counts = require_counts(BASE / 'data', counts_before)
+        after = identity(BASE / 'data')
+        if after != identity_before:
+            raise UpgradeError('ROLLBACK_IDENTITY_CONTINUITY_FAILED')
+        result = {'code_rolled_back': True, 'business_and_auth_data_restored': False,
+                  'image_id': container['image_id'], 'ready': ready,
+                  'runtime_config_sha256': container['runtime_config_sha256'],
+                  'identity_continuity': True, 'business_counts_unchanged': True,
+                  'counts': {k: v for k, v in counts.items() if k != 'generation'},
+                  'generation_sha256': hashlib.sha256(counts['generation'].encode()).hexdigest(),
+                  'identity_counts': {k: v['count'] for k, v in after['tables'].items()}}
+        write_json(journal / 'rollback-receipt.json', result)
     write_json(journal / 'phase.json', {'phase': 'code_rolled_back', 'business_and_auth_data_restored': False})
+    return result
+
+
+def rollback(args):
+    journal, receipt = load_prepared(args)
+    if json.loads(regular(journal / 'phase.json').read_bytes()).get('phase') != 'active':
+        raise UpgradeError('PHASE_NOT_ACTIVE_MANUAL_REVIEW_REQUIRED')
+    _, metadata, container = check_active(journal, receipt)
+    if receipt['old_metadata']['commit'] != args.expected_base:
+        raise UpgradeError('PREPARED_OLD_METADATA_DRIFT')
+    if container['port'] != receipt['port']:
+        raise UpgradeError('PREPARED_PORT_DRIFT')
+    old_config = service_config(Path(receipt['old_release']), receipt['old_image_id'], deployment=receipt['old_metadata'])
+    require_config_binding(receipt, config_digest(old_config, receipt['old_metadata']))
+    activation = json.loads(regular(journal / 'activation-receipt.json').read_bytes())
+    expected = {'current': receipt['new_release'], 'image_id': receipt['new_image_id'],
+                'revision': args.commit, 'metadata': {k: metadata[k] for k in ('version', 'commit', 'git_tree')},
+                'runtime_config_sha256': receipt['runtime_config_sha256'], 'cold_checkpoint': str(journal)}
+    if (any(activation.get(key) != value for key, value in expected.items())
+            or any(activation.get(key) is not True for key in ('ready', 'identity_continuity',
+                'schema_and_storage_unchanged', 'business_counts_unchanged', 'cold_checkpoint_verified'))):
+        raise UpgradeError('ACTIVATION_RECEIPT_MISMATCH')
+    guard = json.loads(regular(journal / 'rollback-guard.json').read_bytes())
+    current_guard = rollback_guard(BASE / 'data', immutable=False)
+    if current_guard != guard or current_guard['gzip_representations']:
+        raise UpgradeError('ROLLBACK_REFUSED_SCHEMA_OR_COMPRESSION_CHANGED')
+    idle_counts(BASE / 'data', require_idle=True)
+    identity(BASE / 'data')  # Validate current identity inputs, not historical cold rows.
+    # The representation scan can be slow. Rebind immediately before stop.
+    check_active(journal, receipt)
+    try:
+        write_json(journal / 'phase.json', {'phase': 'rolling_back', 'business_and_auth_data_restored': False})
+        return rollback_code(journal, receipt, True, explicit=True)
+    except BaseException:
+        write_json(journal / 'phase.json', {'phase': 'manual_recovery_required', 'business_and_auth_data_restored': False})
+        raise
 
 
 def activate(args):
@@ -1032,7 +1111,7 @@ def require_host():
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument('phase', choices=('prepare', 'activate', 'verify'))
+    parser.add_argument('phase', choices=('prepare', 'activate', 'verify', 'rollback'))
     parser.add_argument('--version', required=True)
     parser.add_argument('--commit', required=True)
     parser.add_argument('--expected-base', required=True)
@@ -1060,6 +1139,8 @@ def emit(value):
 
 def main(argv=None):
     args = parse_args(argv)
+    completed_rollback = False
+    journal = None
     try:
         require_host()
         os.umask(0o077)
@@ -1078,11 +1159,19 @@ def main(argv=None):
                 result.update(journal=str(journal), prepared=True)
             elif args.phase == 'activate':
                 result = activate(args)
+            elif args.phase == 'rollback':
+                result = rollback(args)
+                completed_rollback = True
             else:
                 result = verify(args)
-            emit({'phase': args.phase, 'event': 'complete', **result})
+        emit({'phase': args.phase, 'event': 'complete', **result})
         return 0
     except BaseException as error:
+        if completed_rollback and journal is not None:
+            try:
+                write_json(journal / 'phase.json', {'phase': 'manual_recovery_required', 'business_and_auth_data_restored': False})
+            except BaseException:
+                pass  # The failed CLI outcome remains authoritative if storage is unavailable.
         # Never print arbitrary exception messages, argv, environment or rows.
         code = str(error) if isinstance(error, UpgradeError) and re.fullmatch('[A-Z0-9_]+', str(error)) else type(error).__name__
         emit({'phase': args.phase, 'event': 'failed', 'code': code})

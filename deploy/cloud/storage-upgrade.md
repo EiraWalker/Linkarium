@@ -1,6 +1,6 @@
 # Storage-compatible code upgrade operator
 
-`storage_upgrade.py` is a **one-host, code-only upgrade**, not a data migration or disaster-recovery tool. It does not change Nginx, initialize authentication, execute migrations, compress artifacts, restore a database, pull an image, or install dependencies.
+`storage_upgrade.py` provides a **one-host, code-only upgrade and guarded code rollback**, not data migration or disaster recovery. It does not change Nginx, initialize authentication, execute migrations, compress/decode artifacts, restore a database, pull an image, or install dependencies.
 
 ## Scope and prerequisites
 
@@ -67,7 +67,30 @@ On an activation exception the operator tries **code/config-only rollback**: sto
 
 Unknown deployment/config drift, a changed schema/representation, lock conflict, unavailable image/daemon, or unsafe WAL condition can refuse automatic rollback. `phase.json` then says `manual_recovery_required`; do not restart incompatible old code or copy checkpoint `state.sqlite3` over the current DB. The checkpoint is evidence for a separately reviewed recovery, not automatic authorization to revive revoked credentials.
 
-SIGTERM/ordinary errors attempt the guarded rollback; SIGKILL, host loss, or power failure cannot. Any non-`prepared` partial journal blocks a blind `activate` retry. Inspect journal phase and actual env/current/container state; do not erase a journal to bypass this gate. This CLI does not provide a general post-success rollback command.
+SIGTERM/ordinary activation errors attempt the guarded automatic rollback; SIGKILL, host loss, or power failure cannot. Any non-`prepared` partial journal blocks a blind `activate` retry. Inspect journal phase and actual env/current/container state; do not erase a journal to bypass this gate. The explicit command below is limited to a successfully activated, receipt-bound upgrade, not arbitrary deployments or partial recovery.
+
+### Explicit post-activation rollback
+
+This is a separate, deliberately requested action, **not the next step of every upgrade**:
+
+```sh
+python3 "$OP" rollback \
+  --version "$VERSION" --commit "$COMMIT" --expected-base "$EXPECTED_BASE"
+```
+
+Use the same target version, target commit and original expected-base commit as `prepare`/`activate`; do **not** swap the hashes or pass the old version as `--version`. Package arguments remain forbidden. The old release/image must still be retained. Only journal phase `active` with a matching successful `activation-receipt.json` is eligible. Prepared, starting, already-rolled-back, unknown and interrupted/manual-recovery phases fail closed; there is no blind retry, force flag or idempotent-success shortcut.
+
+Before any stop, the command reuses the existing release/manifests, pinned images, active container scope/health, exact env bytes and runtime-configuration bindings. The prospective old image configuration must match the prepared normalized digest as well. It checks current identity inputs, idle jobs/maintenance and the existing schema/representation guard, then repeats the active code/config checks after the potentially slow data scan. A pre-stop refusal leaves the service and phase unchanged.
+
+**A compressed active library is refused, even if gzip was already recorded in the checkpoint guard.** No implicit decompression or database restoration occurs. This command neither implements nor authorizes all-root raw recovery, its cumulative space plan or the separate full-library acceptance gate.
+
+The command reuses `rollback_code()` to stop only the bound app, acquire the real supervisor lock, recheck the current/env bindings and schema/storage guard, and require quiescent SQLite and idle state. Actual network publications can disappear when the container stops; the unchanged full running-container configuration gate runs before stop and after restart, not on that stopped network state. Under the supervisor lock it records **fresh current** `rollback-counts-before.json` and `rollback-identity-before.json`. Newer business rows, revoked credentials and newer sessions since activation are preserved; historical cold counts/auth summaries are not the continuity baseline. The old cold database and physical manifest are not read to satisfy these checks, and standalone `verify` is not called.
+
+Only the environment's two deployment values, the `current` pointer and the running code image are reverted, using the retained byte-exact env checkpoint and old pinned image. The two atomic file/pointer replacements are not a joint transaction. No current business/auth database or artifact is copied, replaced, deleted or rewound. Restart uses the existing no-build/no-pull pinned overlay. Successful postchecks require the old pinned healthy container, loopback readiness, original env bytes/current target, exact runtime configuration, unchanged schema/representation, and fresh pre/post identity/count equality. Concurrent legitimate writes or session-expiry cleanup still cause conservative refusal; counts do not prove every business row's content equality.
+
+`rolling_back` is written before the stop attempt. Restart, lock cleanup, write or postcheck failures retain a non-success phase (`manual_recovery_required`, or `rolling_back` if failure prevents updating the journal) and a failed CLI outcome. There is no second automatic code switch or data recovery attempt. The app may be stopped or running the old image when failure is reported: inspect it rather than assuming either state. If journal storage itself is unavailable, the nonzero CLI outcome must not be overridden by stale phase/receipt bytes.
+
+Acceptance requires **all three**: exit zero with the final `complete` event, `phase.json` equal to `code_rolled_back`, and `rollback-receipt.json` from that attempt. A receipt alone is not success: final phase publication or operator-lock cleanup can still fail afterward. The completion event is emitted only after operator-lock cleanup. Output contains booleans, counts and digests (including a generation digest), not credentials, titles, URLs or rows. Keep all historical checkpoints/journals; they are not automatically cleaned up.
 
 ### Verify and the next storage-migration phase
 
@@ -79,11 +102,14 @@ The completed ZIP hardlink is a same-disk alias, **not an off-host or independen
 
 ## Tests (no production contact)
 
-The test module uses scratch SQLite/filesystem fixtures and a fake Docker protocol. Docker itself is only needed if running the suite in an isolated container. On Linux with a real POSIX scratch filesystem:
+The test modules use scratch SQLite/filesystem fixtures and a fake Docker protocol. Docker itself is only needed if running the suite in an isolated container. On Linux with a real POSIX scratch filesystem:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 HERMES_TEST_SCRATCH=/your/private/scratch \
   python3 tests/deploy/test_storage_upgrade.py
+
+PYTHONDONTWRITEBYTECODE=1 HERMES_TEST_SCRATCH=/your/private/scratch \
+  python3 tests/deploy/test_storage_rollback.py
 ```
 
 Run as root in an isolated test container to include root-owner/mode tests. Windows skips POSIX cases; WSL's `/mnt/e` filesystem may lack FIFO/Unix mode semantics. Those skips are **not** Linux acceptance. This local container command exercises Linux permissions/FIFO/hardlinks without mounting a Docker socket or production data:
@@ -99,3 +125,5 @@ docker run --rm --pull=never --user 0:0 --network none --read-only \
 Use the actual local source mount and an already-installed Python 3.11+ image. The reference image above was available locally during implementation; it is not the deployment target. TDD runs included observed RED cases for missing phases, unsafe archive acceptance/drift, source drift, restrictive-umask code permissions, missing-container rollback, unexpected schema changes and no-follow hashing before their GREEN fixes. A separate local real-Docker proof exercised the exact image-ID/legacy/offline overlay pattern and verified old code directories were removed and the final UID was 10001. Neither those fixtures nor the unit suite prove production deployment or real-user credential login; the parent operator owns that final acceptance.
 
 The configuration/count repair adds RED controls for pre-existing runtime auth/port drift and startup bookmark loss; their original failures remain retained separately from GREEN logs. The scoped suite also covers prepared-digest drift, a second pre-stop check, image defaults, valid code metadata updates, missing/duplicate/extra configured values, prospective configuration changes, cold/active count reconciliation, independent `verify`, no database rewind, and synthetic secret sentinels across success/failure receipts and logs. Separate local Linux controls exercise actual Docker inspect/Compose resolution and the fixed baseline supervisor with synthetic initialized databases, real locks/cold copies and actual loopback readiness, including a loss/refusal/code-only-rollback case. They are not production authentication acceptance or a real target-release deployment.
+
+The explicit-rollback suite imports the unchanged original fixtures and enters through the CLI. It exercises real env/current/SQLite effects, fresh data newer than the cold checkpoint, receipt/phase/config/image refusals before stop, gzip/schema/maintenance races, post-start continuity failures, actual cross-process POSIX lock conflict, cleanup/publication failures and privacy sentinels. Docker and readiness responses are mocked here; native Linux tmpfs acceptance is a filesystem/locking proof, **not** real-Docker or production rollback acceptance. Keep Windows skips explicit and run both modules; do not replace the original operator suite with the new tests.
