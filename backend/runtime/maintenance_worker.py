@@ -80,12 +80,13 @@ def main():
         if isinstance(expected, list):
             expected = {tuple(key): value for key, value in expected}
         manifest = None
-        if request["action"] == "package":
+        if request["action"] in {"package", "backup_verify"}:
             if request.get("expected_sha256") and digest(request["package"]) != request["expected_sha256"]:
                 raise MaintenanceError("RESTORE_PACKAGE_CHANGED")
             manifest = _validate_package(request["package"], request["candidate"], expected_schema=expected,
                                          expanded_limit=request["expanded_limit"],
-                                         compact_artifacts=request.get("compact_artifacts", False))
+                                         compact_artifacts=request.get("compact_artifacts", False),
+                                         verify_only=request["action"] == "backup_verify")
         elif request["action"] == "candidate":
             manifest = _validate_candidate(request["candidate"], expected_schema=expected, prepare=request.get("prepare", False))
         elif request["action"] == "database":

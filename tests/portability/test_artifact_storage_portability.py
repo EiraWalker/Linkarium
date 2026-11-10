@@ -161,13 +161,18 @@ class ArtifactStoragePortabilityTests(unittest.TestCase):
         self.assertEqual(maintenance.validate_candidate(candidate, expected_schema=self.database), manifest)
         self.assertFalse(list((candidate / "artifacts").rglob("*.html")))
 
-    def test_backup_budgets_actual_zip_bytes_and_verifies_compact_candidate(self):
+    def test_backup_budgets_actual_zip_bytes_and_verifies_written_archive(self):
         self.large_compressible_package()
         package = self.root / "quota-backup.zip"
-        with self.quota(40 * 1024**2), patch("runtime.maintenance.validate_package",
-                                          wraps=maintenance.validate_package) as validation:
+        # Observe the real worker boundary, not whether backup verification
+        # happens to retain a public restore candidate as an internal detail.
+        with self.quota(40 * 1024**2), patch("runtime.maintenance._isolated_validation",
+                                          wraps=maintenance._isolated_validation) as validation:
             result = maintenance.create_backup(self.generation, package)
-        self.assertTrue(validation.call_args.kwargs["compact_artifacts"])
+        validation.assert_called_once()
+        self.assertEqual(Path(validation.call_args.kwargs["package"]),
+                         package.with_name(package.name + ".partial"))
+        self.assertEqual(validation.call_args.kwargs["expanded_limit"], maintenance.MAX_EXPANDED_BYTES)
         self.assertLess(result["byte_size"], 1024**2)
         with zipfile.ZipFile(package) as archive:
             for name, item in result["manifest"]["files"].items():
@@ -304,15 +309,44 @@ class ArtifactStoragePortabilityTests(unittest.TestCase):
                 self.assertFalse(package.with_name(package.name + ".partial").exists())
 
     def test_backup_verification_uses_less_space_for_a_single_large_object(self):
-        self.add_artifact(b"q" * (32 * 1024**2), "large", compressed=True)
+        payload = b"q" * (32 * 1024**2)
+        name = self.add_artifact(payload, "large", compressed=True)
         package = self.root / "single-large.zip"
-        # Keep the same validator, but run this trusted fixture in-process so
-        # its real writes participate in the portable quota accounting.
-        with self.quota(64 * 1024**2), patch("runtime.maintenance.validate_package",
-                                          side_effect=maintenance._validate_package):
+        source_hashes = {path: maintenance.digest(path) for path in self.generation.rglob("*") if path.is_file()}
+
+        def verify_in_process(action, *, package, candidate, expanded_limit, expected_schema):
+            self.assertEqual(action, "backup_verify")
+            return maintenance._manifest_summary(maintenance._validate_package(
+                package, candidate, expanded_limit=expanded_limit, expected_schema=expected_schema,
+                verify_only=True))
+
+        # Run the same validator on this trusted fixture in-process so its real
+        # writes share the portable quota; this is not a resource-bound worker.
+        with self.quota(64 * 1024**2) as disk, patch("runtime.maintenance._isolated_validation",
+                                                  side_effect=verify_in_process) as validation:
             result = maintenance.create_backup(self.generation, package)
+        validation.assert_called_once()
+        verification = Path(validation.call_args.kwargs["candidate"])
+        validation.assert_called_once_with("backup_verify",
+            package=str(package.with_name(package.name + ".partial").absolute()),
+            candidate=str(verification), expanded_limit=maintenance.MAX_EXPANDED_BYTES,
+            expected_schema=self.database)
+        self.assertEqual(verification.parent, self.root)
+        self.assertTrue(verification.name.startswith("verify-"))
+        self.assertTrue(any(Path(call.args[0]) == verification for call in disk.call_args_list),
+                        "portable quota never observed verification staging")
         self.assertEqual(result["manifest"]["counts"]["artifacts"], 2)
         self.assertTrue(package.is_file())
+        with zipfile.ZipFile(package) as archive:
+            self.assertEqual(archive.read(name), payload)
+            for member, item in result["manifest"]["files"].items():
+                data = archive.read(member)
+                self.assertEqual(len(data), item["size"])
+                self.assertEqual(hashlib.sha256(data).hexdigest(), item["sha256"])
+        self.assertEqual({path: maintenance.digest(path) for path in self.generation.rglob("*") if path.is_file()},
+                         source_hashes)
+        self.assertFalse(list(self.root.glob("*.partial")))
+        self.assertFalse(list(self.root.glob("backup-*")))
         self.assertFalse(list(self.root.glob("verify-*")))
 
     def test_gzip_storage_symlink_is_rejected_without_reading_outside_object(self):

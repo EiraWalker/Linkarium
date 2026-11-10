@@ -248,14 +248,19 @@ def create_backup(generation_dir, output_path, *, expected_schema=None):
                                         destination.write(chunk)
                 # Verify the final compressed bytes, not merely the pre-compression staging.
                 with performance.span("backup.verify", category="maintenance"):
-                    # For a small logical set, extracting raw needs less space
-                    # than one object's raw + publication workspace. Large
-                    # libraries stay compact; neither mode skips validation.
-                    largest = max((size for _, _, size in artifacts), default=0)
-                    compact = sum(size for _, _, size in artifacts) > 2 * largest + 1024**2
                     with tempfile.TemporaryDirectory(prefix="verify-", dir=output_path.parent) as verification:
-                        validate_package(partial, Path(verification), expected_schema=expected_schema or generation_dir / "library.sqlite3",
-                                         compact_artifacts=compact)
+                        verification = _reject_links(verification)
+                        if any(verification.iterdir()):
+                            raise MaintenanceError("RESTORE_CANDIDATE_NOT_EMPTY")
+                        try:
+                            verified = _isolated_validation("backup_verify", package=str(partial.absolute()),
+                                candidate=str(verification), expanded_limit=MAX_EXPANDED_BYTES,
+                                expected_schema=expected_schema or generation_dir / "library.sqlite3")
+                            if verified != _manifest_summary(manifest):
+                                raise MaintenanceError("RESTORE_RESOURCE_LIMIT")
+                        except BaseException:
+                            _clear_candidate(verification)
+                            raise
                 os.replace(partial, output_path)
             except BaseException as error:
                 partial.unlink(missing_ok=True)
@@ -436,7 +441,7 @@ class _BudgetedArchiveFile(io.BufferedWriter):
 
 
 def _validate_package(package_path, candidate_dir, *, expected_schema=None, expanded_limit=MAX_EXPANDED_BYTES,
-                      compact_artifacts=False):
+                      compact_artifacts=False, verify_only=False):
     from library.artifact_storage import ArtifactStorageError, write_artifact
 
     with performance.span("maintenance.validate_package", category="maintenance"):
@@ -470,7 +475,7 @@ def _validate_package(package_path, candidate_dir, *, expected_schema=None, expa
                 # Expansion is always a logical-byte security limit. Compact
                 # extraction reserves physical staging per object below, not
                 # a second uncompressed copy of the entire library.
-                _require_disk_space(candidate_dir, manifest_size if compact_artifacts else expanded)
+                _require_disk_space(candidate_dir, manifest_size if compact_artifacts or verify_only else expanded)
                 from library.ai_transport import strict_json, AIError
                 try:
                     manifest = strict_json(archive.read("manifest.json").decode("utf-8"))
@@ -503,20 +508,24 @@ def _validate_package(package_path, candidate_dir, *, expected_schema=None, expa
                             raise MaintenanceError("BACKUP_ARTIFACT_INVALID")
                         target = _safe_file(candidate_dir, name)
                         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                        if compact_artifacts and name != "library.sqlite3":
+                        if (compact_artifacts or verify_only) and name != "library.sqlite3":
                             # Raw staging + a worst-case publication temporary,
                             # including gzip overhead; previous objects already
                             # count at their actual on-disk size in disk_usage.
-                            _require_disk_space(candidate_dir, 2 * item["size"] + 1024**2 + manifest_size)
+                            workspace = item["size"] if verify_only else 2 * item["size"] + 1024**2
+                            _require_disk_space(candidate_dir, workspace + manifest_size)
                             # At most one logical HTML object is staged at a
                             # time, within the same isolated validation worker.
                             with tempfile.TemporaryDirectory(prefix="restore-", dir=target.parent) as staging:
                                 raw = Path(staging) / "source.html"
                                 _extract_package_file(archive, info, item, raw)
-                                try:
-                                    write_artifact(raw, target)
-                                except ArtifactStorageError as error:
-                                    raise MaintenanceError("BACKUP_ARTIFACT_INVALID") from error
+                                # Self-verification owns no restorable candidate:
+                                # release each fully checked raw entry immediately.
+                                if not verify_only:
+                                    try:
+                                        write_artifact(raw, target)
+                                    except ArtifactStorageError as error:
+                                        raise MaintenanceError("BACKUP_ARTIFACT_INVALID") from error
                         else:
                             _require_disk_space(candidate_dir, item["size"] + manifest_size)
                             _extract_package_file(archive, info, item, target)
