@@ -1,7 +1,9 @@
 """ZIP64 portability and state-owned maintenance. No runtime credentials enter a package."""
 from __future__ import annotations
 
+import errno
 import hashlib
+import io
 import json
 import os
 import re
@@ -29,6 +31,7 @@ MAX_EXPANDED_BYTES = 64 * 1024**3
 MAX_DATABASE_BYTES = 1024**3
 MAX_ARTIFACT_BYTES = MAX_CAPTURE_BYTES
 MAX_MANIFEST_BYTES = 16 * 1024**2
+DISK_RESERVE_BYTES = 16 * 1024**2
 # A full million-bookmark library remains supported. File-backed records share
 # the archive's existing member budget; orphan rows receive their own budget.
 MAX_FOLDER_ROWS = 100000
@@ -186,6 +189,8 @@ def _validate_database(path, *, expected_schema=None):
 
 def create_backup(generation_dir, output_path, *, expected_schema=None):
     """Call only after the supervisor confirms publishers/cleaners have stopped."""
+    from library.artifact_storage import ArtifactStorageError, open_artifact
+
     with performance.span("maintenance.create_backup", category="maintenance"):
         generation_dir, output_path = Path(generation_dir), Path(output_path)
         if not (generation_dir / "library.sqlite3").is_file():
@@ -201,22 +206,14 @@ def create_backup(generation_dir, output_path, *, expected_schema=None):
                     source.backup(target)
             with performance.span("backup.database_validate", category="maintenance"):
                 artifacts, counts = _validate_database(database, expected_schema=expected_schema or generation_dir / "library.sqlite3")
-            needed = database.stat().st_size + sum(size for _, _, size in artifacts)
-            # Reserve worst-case ZIP bytes now. Validation checks actual remaining
-            # extraction space after compression, without assuming an uncompressed ZIP.
-            if shutil.disk_usage(output_path.parent).free < needed + 16 * 1024**2:
-                raise MaintenanceError("INSUFFICIENT_DISK_SPACE")
+            _require_disk_space(output_path.parent, 0)
             files = {"library.sqlite3": {"size": database.stat().st_size, "sha256": digest(database)}}
             archive_sources = {"library.sqlite3": database}
             # Publishers and cleaners remain stopped until the archive is verified.
             # Read immutable artifacts in place; only SQLite needs its own snapshot.
-            with performance.span("backup.artifact_verify", category="maintenance"):
-                for artifact_hash, name, size in artifacts:
-                    source = _safe_file(generation_dir, name)
-                    if not source.is_file() or source.stat().st_size != size or digest(source) != artifact_hash:
-                        raise MaintenanceError("BACKUP_ARTIFACT_CORRUPT")
-                    archive_sources[name] = source
-                    files[name] = {"size": size, "sha256": artifact_hash}
+            for artifact_hash, name, size in artifacts:
+                archive_sources[name] = _safe_file(generation_dir, name)
+                files[name] = {"size": size, "sha256": artifact_hash}
             manifest = {"format": FORMAT, "format_version": FORMAT_VERSION, "schema_version": SCHEMA_VERSION,
                         "created_at": datetime.now(utc_timezone.utc).isoformat(),
                         "source_generation": generation_dir.name, "files": files, "counts": counts}
@@ -224,17 +221,46 @@ def create_backup(generation_dir, output_path, *, expected_schema=None):
             partial = output_path.with_name(output_path.name + ".partial")
             try:
                 with performance.span("backup.compress", category="maintenance"):
-                    with zipfile.ZipFile(partial, "x", zipfile.ZIP_DEFLATED, allowZip64=True, compresslevel=6) as archive:
+                    with _BudgetedArchiveFile(partial) as output, \
+                            zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED, allowZip64=True, compresslevel=6) as archive:
                         archive.write(staging / "manifest.json", "manifest.json")
                         for name in files:
-                            archive.write(archive_sources[name], name)
+                            if name == "library.sqlite3":
+                                archive.write(database, name)
+                                continue
+                            # The v1 package contains logical HTML, never the
+                            # generation's raw/gzip storage representation. Read
+                            # through EOF so size, SHA and gzip CRC are checked.
+                            with performance.span("backup.artifact_verify", category="maintenance"):
+                                try:
+                                    source = open_artifact(archive_sources[name], expected_size=files[name]["size"])
+                                except (ArtifactStorageError, OSError) as error:
+                                    raise MaintenanceError("BACKUP_ARTIFACT_CORRUPT") from error
+                                with source, archive.open(name, "w", force_zip64=True) as destination:
+                                    while True:
+                                        try:
+                                            chunk = source.read(1024 * 1024)
+                                        except (ArtifactStorageError, OSError) as error:
+                                            raise MaintenanceError("BACKUP_ARTIFACT_CORRUPT") from error
+                                        if not chunk:
+                                            break
+                                        # Output I/O is not evidence that the source is corrupt.
+                                        destination.write(chunk)
                 # Verify the final compressed bytes, not merely the pre-compression staging.
                 with performance.span("backup.verify", category="maintenance"):
+                    # For a small logical set, extracting raw needs less space
+                    # than one object's raw + publication workspace. Large
+                    # libraries stay compact; neither mode skips validation.
+                    largest = max((size for _, _, size in artifacts), default=0)
+                    compact = sum(size for _, _, size in artifacts) > 2 * largest + 1024**2
                     with tempfile.TemporaryDirectory(prefix="verify-", dir=output_path.parent) as verification:
-                        validate_package(partial, Path(verification), expected_schema=expected_schema or generation_dir / "library.sqlite3")
+                        validate_package(partial, Path(verification), expected_schema=expected_schema or generation_dir / "library.sqlite3",
+                                         compact_artifacts=compact)
                 os.replace(partial, output_path)
-            except BaseException:
+            except BaseException as error:
                 partial.unlink(missing_ok=True)
+                if isinstance(error, OSError) and error.errno == errno.ENOSPC:
+                    raise MaintenanceError("INSUFFICIENT_DISK_SPACE") from error
                 raise
         return {"manifest": manifest, "byte_size": output_path.stat().st_size, "sha256": digest(output_path)}
 
@@ -317,7 +343,7 @@ def _candidate_manifest(candidate_dir):
 
 
 def validate_package(package_path, candidate_dir, *, expected_schema=None, expanded_limit=MAX_EXPANDED_BYTES,
-                     expected_sha256=None, summary=False):
+                     expected_sha256=None, summary=False, compact_artifacts=False):
     """Validate untrusted bytes under OS memory/CPU limits and a wall deadline."""
     candidate_dir = _reject_links(candidate_dir)
     if candidate_dir.exists() and any(candidate_dir.iterdir()):
@@ -325,7 +351,8 @@ def validate_package(package_path, candidate_dir, *, expected_schema=None, expan
     candidate_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         manifest = _isolated_validation("package", package=str(Path(package_path).absolute()), candidate=str(candidate_dir),
-                                        expected_schema=expected_schema, expanded_limit=expanded_limit, expected_sha256=expected_sha256)
+                                        expected_schema=expected_schema, expanded_limit=expanded_limit, expected_sha256=expected_sha256,
+                                        compact_artifacts=compact_artifacts)
         return manifest if summary else _candidate_manifest(candidate_dir)
     except BaseException:
         _clear_candidate(candidate_dir)
@@ -344,14 +371,27 @@ def validate_candidate(candidate_dir, *, expected_schema=None, prepare=False, su
 
 
 def _validate_candidate(candidate_dir, *, expected_schema=None, prepare=False):
+    from library.artifact_storage import ArtifactStorageError, open_artifact
+
     candidate_dir = _reject_links(candidate_dir)
     manifest = _candidate_manifest(candidate_dir)
     if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), dict) or len(manifest["files"]) >= MAX_FILES:
         raise MaintenanceError("BACKUP_MANIFEST_INVALID")
     for name, info in manifest["files"].items():
         candidate_file = _safe_file(candidate_dir, name)
-        if candidate_file.stat().st_size != info["size"] or digest(candidate_file) != info["sha256"]:
-            raise MaintenanceError("RESTORE_CANDIDATE_CHANGED")
+        if name == "library.sqlite3":
+            if candidate_file.stat().st_size != info["size"] or digest(candidate_file) != info["sha256"]:
+                raise MaintenanceError("RESTORE_CANDIDATE_CHANGED")
+        else:
+            try:
+                actual_hash = hashlib.sha256()
+                with open_artifact(candidate_file, expected_size=info["size"]) as source:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        actual_hash.update(chunk)
+                if actual_hash.hexdigest() != info["sha256"]:
+                    raise MaintenanceError("RESTORE_CANDIDATE_CHANGED")
+            except (ArtifactStorageError, OSError) as error:
+                raise MaintenanceError("RESTORE_CANDIDATE_CHANGED") from error
     artifacts, counts = _validate_database(candidate_dir / "library.sqlite3", expected_schema=expected_schema)
     if (counts != manifest["counts"] or set(manifest["files"]) != {"library.sqlite3"} | {name for _, name, _ in artifacts}):
         raise MaintenanceError("BACKUP_MANIFEST_INVALID")
@@ -363,7 +403,42 @@ def _validate_candidate(candidate_dir, *, expected_schema=None, prepare=False):
     return manifest
 
 
-def _validate_package(package_path, candidate_dir, *, expected_schema=None, expanded_limit=MAX_EXPANDED_BYTES):
+def _extract_package_file(archive, info, item, target):
+    """No storage encoding is published until ZIP size/CRC/SHA checks finish."""
+    actual_hash, actual_size = hashlib.sha256(), 0
+    with archive.open(info) as source, target.open("xb") as destination:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            actual_size += len(chunk)
+            if actual_size > item["size"]:
+                raise MaintenanceError("BACKUP_EXPANSION_LIMIT")
+            actual_hash.update(chunk)
+            destination.write(chunk)
+    if actual_size != item["size"] or actual_hash.hexdigest() != item["sha256"]:
+        raise MaintenanceError("BACKUP_HASH_MISMATCH")
+
+
+def _require_disk_space(directory, byte_size):
+    if shutil.disk_usage(directory).free < byte_size + DISK_RESERVE_BYTES:
+        raise MaintenanceError("INSUFFICIENT_DISK_SPACE")
+
+
+class _BudgetedArchiveFile(io.BufferedWriter):
+    """Budget actual compressed ZIP writes, including its central directory."""
+    def __init__(self, path):
+        self.directory = Path(path).parent
+        super().__init__(io.FileIO(path, "xb"), buffer_size=io.DEFAULT_BUFFER_SIZE)
+
+    def write(self, data):
+        # Include pending buffered bytes: small header writes may not yet be
+        # reflected by disk_usage. Never infer ZIP size from gzip or raw size.
+        _require_disk_space(self.directory, len(data) + io.DEFAULT_BUFFER_SIZE)
+        return super().write(data)
+
+
+def _validate_package(package_path, candidate_dir, *, expected_schema=None, expanded_limit=MAX_EXPANDED_BYTES,
+                      compact_artifacts=False):
+    from library.artifact_storage import ArtifactStorageError, write_artifact
+
     with performance.span("maintenance.validate_package", category="maintenance"):
         candidate_dir = Path(candidate_dir)
         if candidate_dir.is_symlink() or (candidate_dir.exists() and any(candidate_dir.iterdir())):
@@ -391,8 +466,11 @@ def _validate_package(package_path, candidate_dir, *, expected_schema=None, expa
                     raise MaintenanceError("BACKUP_EXPANSION_LIMIT")
                 if not {"manifest.json", "library.sqlite3"}.issubset(names):
                     raise MaintenanceError("BACKUP_MANIFEST_INVALID")
-                if shutil.disk_usage(candidate_dir).free < expanded + 16 * 1024**2:
-                    raise MaintenanceError("INSUFFICIENT_DISK_SPACE")
+                manifest_size = archive.getinfo("manifest.json").file_size
+                # Expansion is always a logical-byte security limit. Compact
+                # extraction reserves physical staging per object below, not
+                # a second uncompressed copy of the entire library.
+                _require_disk_space(candidate_dir, manifest_size if compact_artifacts else expanded)
                 from library.ai_transport import strict_json, AIError
                 try:
                     manifest = strict_json(archive.read("manifest.json").decode("utf-8"))
@@ -421,18 +499,27 @@ def _validate_package(package_path, candidate_dir, *, expected_schema=None, expa
                         info = archive.getinfo(name)
                         if item["size"] != info.file_size:
                             raise MaintenanceError("BACKUP_HASH_MISMATCH")
+                        if name != "library.sqlite3" and item["sha256"] != Path(name).stem:
+                            raise MaintenanceError("BACKUP_ARTIFACT_INVALID")
                         target = _safe_file(candidate_dir, name)
                         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                        actual_hash, actual_size = hashlib.sha256(), 0
-                        with archive.open(info) as source, target.open("xb") as destination:
-                            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                                actual_size += len(chunk)
-                                if actual_size > item["size"]:
-                                    raise MaintenanceError("BACKUP_EXPANSION_LIMIT")
-                                actual_hash.update(chunk)
-                                destination.write(chunk)
-                        if actual_size != item["size"] or actual_hash.hexdigest() != item["sha256"]:
-                            raise MaintenanceError("BACKUP_HASH_MISMATCH")
+                        if compact_artifacts and name != "library.sqlite3":
+                            # Raw staging + a worst-case publication temporary,
+                            # including gzip overhead; previous objects already
+                            # count at their actual on-disk size in disk_usage.
+                            _require_disk_space(candidate_dir, 2 * item["size"] + 1024**2 + manifest_size)
+                            # At most one logical HTML object is staged at a
+                            # time, within the same isolated validation worker.
+                            with tempfile.TemporaryDirectory(prefix="restore-", dir=target.parent) as staging:
+                                raw = Path(staging) / "source.html"
+                                _extract_package_file(archive, info, item, raw)
+                                try:
+                                    write_artifact(raw, target)
+                                except ArtifactStorageError as error:
+                                    raise MaintenanceError("BACKUP_ARTIFACT_INVALID") from error
+                        else:
+                            _require_disk_space(candidate_dir, item["size"] + manifest_size)
+                            _extract_package_file(archive, info, item, target)
                 database = candidate_dir / "library.sqlite3"
                 upgraded = False
                 try:
@@ -630,7 +717,7 @@ def process_operation(operation_id, *, stop_services, start_services, ready_serv
                 candidate = generation_root(operation.target_generation)
                 manifest = validate_package(source, candidate,
                     expected_schema=generation_root(old_generation) / "library.sqlite3", expected_sha256=operation.package_sha256,
-                    summary=True)
+                    summary=True, compact_artifacts=True)
                 import hmac
                 token = hmac.new(settings.SECRET_KEY.encode(), (str(operation.id) + "\n" + operation.package_sha256 +
                     "\n" + str(operation.expected_library_epoch)).encode(), hashlib.sha256).hexdigest()

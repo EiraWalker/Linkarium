@@ -1,7 +1,9 @@
 """Inventory proves provenance and read-only behavior using local SQLite fixtures."""
 import hashlib
+import gzip
 import importlib.util
 import json
+import os
 from contextlib import closing
 from pathlib import Path
 import sqlite3
@@ -99,6 +101,25 @@ class InventoryTests(unittest.TestCase):
             with inventory.read_database(missing):
                 pass
         self.assertFalse(missing.exists())
+
+    def test_storage_counts_gzip_and_deduplicates_hardlinked_bytes(self):
+        folder = self.generation / "artifacts" / "aa"
+        folder.mkdir(parents=True)
+        raw = folder / ("a" * 64 + ".html")
+        raw.write_bytes(b"plain archive")
+        packed = folder / ("b" * 64 + ".html.gz")
+        packed.write_bytes(gzip.compress(b"archived HTML" * 1000, mtime=0))
+        alias = folder / ("c" * 64 + ".html.gz")
+        os.link(packed, alias)
+        before = self.hashes()
+        result = inventory.collect_inventory(self.root)
+        measured = result["resources"]["html_archives"]
+        self.assertEqual(measured["count"], 3)
+        self.assertEqual(measured["bytes"], raw.stat().st_size + 2 * packed.stat().st_size)
+        self.assertEqual(measured["unique_files"], 2)
+        self.assertEqual(measured["unique_bytes"], raw.stat().st_size + packed.stat().st_size)
+        self.assertEqual(result["snapshots"]["artifact_bytes_recorded"], 4)
+        self.assertEqual(before, self.hashes())
 
     def test_cancelled_job_does_not_reuse_previous_failed_attempt_as_cancellation_time(self):
         with closing(sqlite3.connect(self.generation / "library.sqlite3")) as db, db:

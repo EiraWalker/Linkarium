@@ -17,6 +17,7 @@ from django.db import transaction
 from runtime import performance
 from config.paths import generation_root, PROJECT_ROOT, current_generation
 from .artifacts import artifact_path
+from .artifact_storage import ArtifactStorageError, open_artifact, storage_path
 from .errors import ApiError
 
 CACHE_VERSION = "v1"
@@ -87,8 +88,12 @@ def preview_response(request, version, *, generation=None):
     from django.utils.http import parse_etags
     path = image_path(version, generation)
     if not path.is_file():
-        if not artifact_path(version.artifact_id, version.artifact.relative_path, generation).is_file():
-            raise ApiError("ARTIFACT_MISSING", "归档文件缺失", 404)
+        try:
+            storage_path(artifact_path(version.artifact_id, version.artifact.relative_path, generation))
+        except FileNotFoundError as error:
+            raise ApiError("ARTIFACT_MISSING", "归档文件缺失", 404) from error
+        except ArtifactStorageError as error:
+            raise ApiError("ARTIFACT_CORRUPT", "归档文件校验失败") from error
         failure = path.with_suffix(".failed")
         if failure.exists() and time.time() - failure.stat().st_mtime < RETRY_SECONDS:
             response = JsonResponse({"error": {"code": "PREVIEW_UNAVAILABLE", "message": "预览图暂不可用"}}, status=503)
@@ -149,12 +154,13 @@ def render_version(version, generation):
         from .models import SnapshotVersion
         from . import queue
         source = artifact_path(version.artifact_id, version.artifact.relative_path, generation)
-        if not source.is_file() or source.stat().st_size != version.artifact.byte_size:
-            raise ApiError("ARTIFACT_CORRUPT", "归档文件校验失败")
         with performance.span("preview.verify_archive", category="preview"):
-            with source.open("rb") as content:
-                if hashlib.file_digest(content, "sha256").hexdigest() != version.artifact_id:
-                    raise ApiError("ARTIFACT_CORRUPT", "归档文件校验失败")
+            try:
+                with open_artifact(source, expected_size=version.artifact.byte_size) as content:
+                    for _ in content:
+                        pass
+            except (FileNotFoundError, ArtifactStorageError) as error:
+                raise ApiError("ARTIFACT_CORRUPT", "归档文件校验失败") from error
         target = image_path(version, generation)
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(f".{uuid.uuid4().hex}.tmp")

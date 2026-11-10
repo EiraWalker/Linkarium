@@ -12,13 +12,14 @@ from django.core.exceptions import ValidationError, RequestDataTooBig
 from django.core import signing
 from django.db import IntegrityError, OperationalError, transaction
 from django.db.models import Count
-from django.http import JsonResponse, FileResponse
+from django.http import JsonResponse, FileResponse, StreamingHttpResponse
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from config.paths import DATA_ROOT, generation_root
 from runtime.models import RuntimeState, ProviderSecret, MaintenanceOperation, RuntimeIdempotency
 from library.errors import ApiError
 from library.artifacts import artifact_path
+from library.artifact_storage import ArtifactStorageError, open_artifact
 from library import catalog, queue
 from library.models import *
 from .middleware import error_response
@@ -639,10 +640,21 @@ def route_request(request, route):
     if parts[0] == "snapshots" and len(parts) == 3 and parts[2] == "preview":
         require_method(request, "GET", "HEAD")
         version = catalog.get_entity(SnapshotVersion, parts[1])
-        path = artifact_path(version.artifact_id, version.artifact.relative_path)
-        if not path.is_file():
-            raise ApiError("ARTIFACT_MISSING", "归档文件缺失", 404)
-        response = FileResponse(path.open("rb"), content_type="text/html; charset=utf-8")
+        path = artifact_path(version.artifact_id, version.artifact.relative_path, state.active_generation)
+        try:
+            stream = open_artifact(path, expected_size=version.artifact.byte_size)
+        except FileNotFoundError as error:
+            raise ApiError("ARTIFACT_MISSING", "归档文件缺失", 404) from error
+        except ArtifactStorageError as error:
+            raise ApiError("ARTIFACT_CORRUPT", "归档文件校验失败") from error
+        # The iterator owns both handles. Django registers its close() even if
+        # the client disconnects before the first body chunk is requested.
+        if request.method == "HEAD":
+            stream.close()
+            response = StreamingHttpResponse((), content_type="text/html; charset=utf-8")
+        else:
+            response = StreamingHttpResponse(stream, content_type="text/html; charset=utf-8")
+        response["Content-Length"] = str(version.artifact.byte_size)
         response["Content-Security-Policy"] = "sandbox; default-src 'none'; script-src 'none'; connect-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline' data:; frame-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
         response["X-Frame-Options"] = "SAMEORIGIN"
         return response

@@ -1,5 +1,7 @@
 """Offline first-screen backfill reuses archives without visiting their origins."""
 import os
+import gzip
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,6 +14,24 @@ from library.preview_render import render
 
 @unittest.skipUnless(os.environ.get("RUN_CAPTURE_INTEGRATION") == "1", "Real Chromium integration")
 class PreviewBackfillTests(unittest.TestCase):
+    def test_gzip_archive_renders_desktop_and_mobile_without_materializing_html(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = b'<!doctype html><body style="background:#69b"><h1>Lossless archived page</h1></body>'
+            digest = hashlib.sha256(original).hexdigest()
+            source = Path(directory) / "artifacts" / digest[:2] / (digest + ".html")
+            source.parent.mkdir(parents=True)
+            packed = source.with_suffix(".html.gz")
+            packed.write_bytes(gzip.compress(original, mtime=0))
+            before = packed.read_bytes()
+            for width, height in ((1366, 768), (390, 844)):
+                with self.subTest(viewport=(width, height)):
+                    output = Path(directory) / f"compressed-{width}.jpg"
+                    render(source, output, width, height)
+                    details = validate_preview(output, width=width, height=height)
+                    self.assertGreater(details["byte_size"], 1000)
+                    self.assertFalse(source.exists())
+                    self.assertEqual(packed.read_bytes(), before)
+
     def test_saved_archive_renders_both_viewports_without_running_scripts_or_loading_external_urls(self):
         hits = []
         class Server(BaseHTTPRequestHandler):

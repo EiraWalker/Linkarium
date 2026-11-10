@@ -84,7 +84,8 @@ def main():
             if request.get("expected_sha256") and digest(request["package"]) != request["expected_sha256"]:
                 raise MaintenanceError("RESTORE_PACKAGE_CHANGED")
             manifest = _validate_package(request["package"], request["candidate"], expected_schema=expected,
-                                         expanded_limit=request["expanded_limit"])
+                                         expanded_limit=request["expanded_limit"],
+                                         compact_artifacts=request.get("compact_artifacts", False))
         elif request["action"] == "candidate":
             manifest = _validate_candidate(request["candidate"], expected_schema=expected, prepare=request.get("prepare", False))
         elif request["action"] == "database":

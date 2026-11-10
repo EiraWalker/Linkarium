@@ -9,6 +9,7 @@ import argparse
 from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from itertools import chain
 import json
 import math
 from pathlib import Path
@@ -84,16 +85,26 @@ def _counter(rows, field):
 
 
 def _file_inventory(paths):
-    sizes, skipped = [], 0
+    sizes, skipped, inodes = [], 0, {}
     for path in paths:
         try:
-            if path.is_symlink() or not path.is_file():
+            if (path.is_symlink() or not path.is_file() or
+                    any(parent.is_symlink() or parent.is_junction() for parent in path.parents)):
                 skipped += 1
                 continue
-            sizes.append(path.stat().st_size)
+            info = path.stat()
+            sizes.append(info.st_size)
+            inodes.setdefault((info.st_dev, info.st_ino), info)
         except OSError:
             skipped += 1
-    return {"count": len(sizes), "bytes": sum(sizes), "largest_bytes": max(sizes, default=0), "skipped": skipped}
+    # bytes is the sum of file lengths (encoded for gzip), not logical HTML.
+    # Physical hardlink accounting is separate; allocated blocks are unavailable
+    # through stat on some platforms, so never pretend length equals allocation.
+    allocated = (sum(info.st_blocks * 512 for info in inodes.values())
+                 if all(hasattr(info, "st_blocks") for info in inodes.values()) else None)
+    return {"count": len(sizes), "bytes": sum(sizes), "largest_bytes": max(sizes, default=0), "skipped": skipped,
+            "unique_files": len(inodes), "unique_bytes": sum(info.st_size for info in inodes.values()),
+            "allocated_bytes": allocated}
 
 
 def _attempt_evidence(jobs, attempts, now):
@@ -307,7 +318,8 @@ def collect_inventory(data_root):
             "preview_cache_version": "v1", "preview_integrity_not_revalidated": True},
         "resources": {"state_database": _file_inventory([data_root / "state.sqlite3", data_root / "state.sqlite3-wal"]),
             "library_database": _file_inventory([generation_dir / "library.sqlite3", generation_dir / "library.sqlite3-wal"]),
-            "html_archives": _file_inventory((generation_dir / "artifacts").glob("*/*.html")),
+            "html_archives": _file_inventory(chain((generation_dir / "artifacts").glob("*/*.html"),
+                                                   (generation_dir / "artifacts").glob("*/*.html.gz"))),
             "preview_images": _file_inventory(cache_root.glob("*.jpg")),
             "preview_requests": _file_inventory(cache_root.glob("*.request")),
             "preview_failures": _file_inventory(cache_root.glob("*.failed")),

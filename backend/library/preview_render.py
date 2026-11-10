@@ -1,24 +1,29 @@
 """Offline renderer for existing archives. Invoked in a bounded child process."""
 import os
 from pathlib import Path
+import re
 import sys
 import time
 
 
 def render(source, output, width, height):
     from playwright.sync_api import sync_playwright
-    from capture.models import MAX_CAPTURE_BYTES
     from capture.preview import screenshot_preview
     from capture.replay_document import ReplayDocument
     from capture.runner import REPLAY_CSP
-    if source.is_symlink() or not source.is_file() or not 0 < source.stat().st_size <= MAX_CAPTURE_BYTES:
+    from .artifact_storage import read_artifact, read_capture_source
+    # Offline tools also pass unnamed raw captures (e.g. archive.html). Stored
+    # objects always have canonical names and must pass storage verification.
+    data = (read_artifact(source) if re.fullmatch(r"[0-9a-f]{64}\.html", source.name)
+            else read_capture_source(source))
+    if not data:
         raise ValueError("Invalid archive")
     if not 1 <= width <= 4096 or not 1 <= height <= 4096:
         raise ValueError("Invalid viewport")
     deadline = time.monotonic() + 55
     def remaining():
         return max(1, int((deadline - time.monotonic()) * 1000))
-    with sync_playwright() as playwright, ReplayDocument(source.read_bytes(), REPLAY_CSP, deadline) as document:
+    with sync_playwright() as playwright, ReplayDocument(data, REPLAY_CSP, deadline) as document:
         # Proxy only serves one immutable document; cannot forward traffic.
         env = {k: v for k, v in os.environ.items() if k.upper() not in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")}
         browser = playwright.chromium.launch(headless=True, chromium_sandbox=True, env=env,

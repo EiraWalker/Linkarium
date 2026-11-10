@@ -19,6 +19,7 @@ from . import queue
 from .catalog import library_settings
 from .errors import ApiError
 from .artifacts import artifact_path
+from .artifact_storage import ArtifactStorageError, artifact_mtime, delete_artifact, inspect_source, iter_artifacts, write_artifact
 from .models import Bookmark, PageMetadata, CaptureState, Artifact, SnapshotVersion, Job, JobAttempt
 
 
@@ -77,7 +78,10 @@ def publish_snapshot(job, attempt, result):
     if not source.is_file() or source.stat().st_size > MAX_CAPTURE_BYTES:
         raise ApiError("INVALID_ARTIFACT", "快照文件无效")
     with performance.span("snapshot.hash", category="worker"):
-        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        try:
+            digest, byte_size = inspect_source(source)
+        except ArtifactStorageError as error:
+            raise ApiError("INVALID_ARTIFACT", "快照文件无效") from error
     relative = f"artifacts/{digest[:2]}/{digest}.html"
     destination = artifact_path(digest, relative, job.generation)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -99,13 +103,11 @@ def publish_snapshot(job, attempt, result):
             # Cleanup takes the same library write lock. Publish the prepared
             # file under that lock so it cannot reclaim an older orphan with
             # identical bytes between rename and reference creation.
-            if destination.exists():
-                if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
-                    raise ApiError("ARTIFACT_CORRUPT", "已有归档文件校验失败")
-                temporary.unlink()
-            else:
-                os.replace(temporary, destination)
-            artifact, _ = Artifact.objects.get_or_create(sha256=digest, defaults={"relative_path": relative, "byte_size": destination.stat().st_size})
+            try:
+                write_artifact(temporary, destination)
+            except ArtifactStorageError as error:
+                raise ApiError("ARTIFACT_CORRUPT", "归档文件校验失败") from error
+            artifact, _ = Artifact.objects.get_or_create(sha256=digest, defaults={"relative_path": relative, "byte_size": byte_size})
             now = timezone.now()
             version = SnapshotVersion.objects.create(bookmark=bookmark, variant=job.variant, artifact=artifact, capture_attempt=attempt, captured_at=now, source_url=bookmark.canonical_url, final_url=result_value(result, "final_url", bookmark.canonical_url), viewport_width=result_value(result, "viewport_width"), viewport_height=result_value(result, "viewport_height"), recipe_version=str(result_value(result, "recipe_version", "1")), capture_epoch=bookmark.capture_epoch, content_warnings=result_value(result, "warnings", []) or [])
             preview_source = result_value(result, "preview_path")
@@ -135,21 +137,23 @@ def publish_snapshot(job, attempt, result):
 
 def cleanup_artifacts():
     root = generation_root()
+    cutoff = time.time() - 3600
     # Short write lock prevents a concurrent publication from acquiring a row
     # for an object while it is removed from disk.
     with transaction.atomic(using="library"):
         for artifact in Artifact.objects.filter(versions__isnull=True):
             path = artifact_path(artifact.sha256, artifact.relative_path)
-            if path.exists() and time.time() - path.stat().st_mtime < 3600:
+            modified = artifact_mtime(path)
+            if modified is not None and modified >= cutoff:
                 continue
-            path.unlink(missing_ok=True)
+            delete_artifact(path)
             artifact.delete()
-        referenced = set(Artifact.objects.values_list("relative_path", flat=True))
-        for path in (root / "artifacts").glob("*/*.html"):
-            if path.is_symlink() or path.parent.is_symlink():
-                continue
-            if str(path.relative_to(root)).replace("\\", "/") not in referenced and time.time() - path.stat().st_mtime > 3600:
-                path.unlink(missing_ok=True)
+        referenced = {artifact_path(digest, relative).absolute()
+            for digest, relative in Artifact.objects.values_list("sha256", "relative_path")}
+        for path in iter_artifacts(root / "artifacts"):
+            modified = artifact_mtime(path)
+            if path not in referenced and modified is not None and modified < cutoff:
+                delete_artifact(path)
         from .preview_cache import cleanup_previews
         cleanup_previews()
 

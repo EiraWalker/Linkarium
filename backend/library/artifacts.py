@@ -2,6 +2,7 @@
 import re
 from config.paths import generation_root
 from .errors import ApiError
+from .artifact_storage import ArtifactStorageError, validate_artifact_path
 
 
 def artifact_path(sha256, relative_path=None, generation=None):
@@ -12,6 +13,8 @@ def artifact_path(sha256, relative_path=None, generation=None):
         raise ApiError("INVALID_ARTIFACT", "归档文件路径无效")
     root = generation_root(generation)
     candidate = root / canonical
-    if any(path.is_symlink() for path in (root / "artifacts", candidate.parent, candidate)) or not candidate.resolve().is_relative_to(root.resolve()):
-        raise ApiError("INVALID_ARTIFACT", "归档文件路径超出收藏库")
+    try:
+        validate_artifact_path(candidate)
+    except ArtifactStorageError as error:
+        raise ApiError("INVALID_ARTIFACT", "归档文件路径超出收藏库") from error
     return candidate

@@ -8,6 +8,7 @@ from django.test import TestCase
 
 from runtime.models import RuntimeState
 from . import catalog, queue
+from .artifact_storage import open_artifact, storage_path
 from .errors import ApiError
 from .models import Artifact, CaptureState, LibrarySettings, SnapshotVersion
 from .worker import publish_snapshot
@@ -52,8 +53,8 @@ class CaptureArtifactBudgetTests(TestCase):
                 version = publish_snapshot(job, attempt, {'artifact_path': source, 'viewport_width': 1366,
                     'viewport_height': 768, 'title': 'Large archive', 'final_url': bookmark.canonical_url})
             target = root / 'generation' / f'artifacts/{digest[:2]}/{digest}.html'
-            self.assertEqual(target.stat().st_size, size)
-            with target.open('rb') as stream:
+            self.assertLess(storage_path(target).stat().st_size, size)
+            with open_artifact(target, expected_size=size) as stream:
                 self.assertEqual(hashlib.file_digest(stream, 'sha256').hexdigest(), digest)
             self.assertEqual(version.artifact_id, digest)
             self.assertEqual(Artifact.objects.get(pk=digest).byte_size, size)
