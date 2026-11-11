@@ -642,6 +642,25 @@ def application_files(release):
     return result
 
 
+# One observed immutable base, not a general extra-file allowlist. The pinned
+# complete release manifest also binds release.json and all its metadata bytes.
+LEGACY_BASE_IMAGE = {
+    'image_id': 'sha256:9678767011890258ddd0d24460c6976cf479aa35cb23f1d3761676437de0c5c5',
+    'release': '/srv/linkarium/releases/Linkarium-v0.2.0-local-ai.1-deploy',
+    'version': 'v0.2.0-local-ai.1',
+    'commit': '32b1b857b1ba3dc7b5835a5e750cef2ef4ed8576',
+    'manifest_sha256': '3b14035e756c0b4b6af0503fa4c5602f37781b1e5706f5cb9789506cfb1ca79a',
+    'files': {'frontend/dist/assets/index-D4nBYapU.js':
+              'c4d161304e3084502915f49e7e989106b643e01729006b28beb6eceb13c5d587'},
+    'provenance': {
+        'evidence': 'legacy-asset-provenance-v1-output.txt',
+        'retained_releases': ['Linkarium-v0.1.2-deploy', 'Linkarium-v0.1.3-firefox.1-deploy',
+                              'Linkarium-v0.1.3-firefox.2-deploy'],
+        'asset_bytes': 167117,
+    },
+}
+
+
 IMAGE_CHECK = '''import hashlib,json,os,stat,sys
 from pathlib import Path
 expected=json.load(sys.stdin)
@@ -664,15 +683,33 @@ print('{"verified":true}')
 '''
 
 
-def verify_image_source(image_id, release):
+def verify_image_source(image_id, release, *, base_journal=None):
     expected = application_files(release)
+    legacy = None
+    manifest_sha = digest(release / 'SHA256SUMS') if base_journal is not None else None
+    # Only prepare's old-base check supplies a journal; every target stays exact
+    # against its release alone, even if given the pinned legacy image ID.
+    if base_journal is not None and image_id == LEGACY_BASE_IMAGE['image_id']:
+        if (str(release) != LEGACY_BASE_IMAGE['release']
+                or manifest_sha != LEGACY_BASE_IMAGE['manifest_sha256']):
+            raise UpgradeError('LEGACY_BASE_IDENTITY_MISMATCH')
+        verify_release(release, LEGACY_BASE_IMAGE['version'], LEGACY_BASE_IMAGE['commit'])
+        if expected.keys() & LEGACY_BASE_IMAGE['files'].keys():
+            raise UpgradeError('LEGACY_BASE_FILE_CONFLICT')
+        expected.update(LEGACY_BASE_IMAGE['files'])
+        legacy = LEGACY_BASE_IMAGE
     result = json.loads(docker(['run', '--rm', '-i', '--pull=never', '--network', 'none', '--read-only',
         '--user', '10001:10001', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
         '--memory', '256m', '--pids-limit', '64', '--entrypoint', 'python', image_id, '-c', IMAGE_CHECK],
         input=json.dumps(expected, sort_keys=True).encode(), timeout=180))
     if result != {'verified': True}:
         raise UpgradeError('IMAGE_SOURCE_MISMATCH')
-    return hashlib.sha256(json.dumps(expected, sort_keys=True).encode()).hexdigest()
+    proof = hashlib.sha256(json.dumps(expected, sort_keys=True).encode()).hexdigest()
+    if base_journal is not None:
+        write_json(base_journal / 'base-source-proof.json', {
+            'image_id': image_id, 'release': str(release), 'release_manifest_sha256': manifest_sha,
+            'source_sha256': proof, 'files': expected, 'legacy_inventory': legacy})
+    return proof
 
 
 def require_compatible(old, new):
@@ -705,7 +742,7 @@ def prepare(args):
     target = safe(BASE / 'releases' / extracted.name, BASE / 'releases')
     if target.exists():
         raise UpgradeError('TARGET_RELEASE_ALREADY_EXISTS')
-    old_proof = verify_image_source(container['image_id'], old)
+    old_proof = verify_image_source(container['image_id'], old, base_journal=journal)
     new_manifest_sha = digest(extracted / 'SHA256SUMS')
     extracted.rename(target)
     sync_directory(target.parent)
@@ -730,6 +767,7 @@ def prepare(args):
         'old_release': str(old), 'new_release': str(target), 'old_metadata': metadata,
         'old_image_id': container['image_id'], 'new_image_id': new_id,
         'old_source_sha256': old_proof, 'new_source_sha256': new_proof, 'port': port,
+        'base_source_proof_sha256': digest(journal / 'base-source-proof.json'),
         'runtime_config_sha256': container['runtime_config_sha256'],
         'package_sha256': args.package_sha256, 'env_sha256': hashlib.sha256(environment).hexdigest(),
         'old_manifest_sha256': old_manifest_sha, 'new_manifest_sha256': new_manifest_sha}
