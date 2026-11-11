@@ -94,7 +94,10 @@ def walk(root):
     files, directories = [], [root]
     if not root.is_dir():
         raise UpgradeError('PATH_NOT_DIRECTORY')
-    for current, dirs, names in os.walk(root, followlinks=False):
+    def failed(error):
+        # A partial tree is not a valid release, checkpoint or safety inventory.
+        raise error
+    for current, dirs, names in os.walk(root, followlinks=False, onerror=failed):
         for name in dirs + names:
             path = safe(Path(current) / name, root)
             (directories if path.is_dir() else files).append(path)
